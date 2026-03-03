@@ -1,4 +1,4 @@
-"""Tests for filesystem creation (Section 3 of ecpoint.py)."""
+"""Tests for filesystem creation."""
 
 import datetime
 
@@ -13,25 +13,25 @@ class TestBuildPaths:
     """Test path construction from config."""
 
     def test_work_dir(self, small_config, small_paths):
-        assert "WorkDir" in str(small_paths.work_dir)
+        assert "work" in str(small_paths.work_dir)
         assert str(small_config.main_dir) in str(small_paths.work_dir)
 
     def test_out_dir(self, small_paths):
-        assert "Forecasts" in str(small_paths.out_dir)
+        assert "forecasts" in str(small_paths.out_dir)
 
     def test_calibration_paths(self, small_paths):
-        assert small_paths.breakpoints_file.name == "BreakPointsWT.txt"
-        assert small_paths.fers_file.name == "FERs.txt"
+        assert small_paths.breakpoints_file.name == "breakpoints_wt.txt"
+        assert small_paths.fers_file.name == "fers.txt"
 
     def test_sample_paths(self, small_paths):
-        assert small_paths.global_sample_file.name == "Global.grib"
-        assert small_paths.sub_area_sample_file.name == "SubArea.grib"
+        assert small_paths.global_sample_file.name == "global.grib"
+        assert small_paths.sub_area_sample_file.name == "sub_area.grib"
 
     def test_var_acc_ver_in_path(self, small_paths):
         path_str = str(small_paths.temp_dir)
-        assert "ecPoint_Rainfall" in path_str
+        assert "ecpoint_rainfall" in path_str
         assert "012" in path_str
-        assert "Vers1.0.0" in path_str
+        assert "v1.0.0" in path_str
 
 
 class TestCreateFilesystem:

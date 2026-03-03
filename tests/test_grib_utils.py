@@ -1,4 +1,4 @@
-"""Tests for GRIB utility functions (Section 4 of ecpoint.py)."""
+"""Tests for GRIB utility functions."""
 
 from pathlib import Path
 

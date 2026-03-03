@@ -1,4 +1,4 @@
-"""Tests for post-processing (Section 7 of ecpoint.py)."""
+"""Tests for post-processing."""
 
 import numpy as np
 import pytest

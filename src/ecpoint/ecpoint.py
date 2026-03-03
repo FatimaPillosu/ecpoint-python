@@ -4,8 +4,7 @@ ecPoint — Post-processing system for NWP ensemble forecasts.
 Converts raw ensemble model output into bias-corrected point rainfall
 forecasts using weather-type-dependent calibration (Forecast Error Ratios).
 
-This is a Python port of the original Metview implementation by ECMWF,
-using earthkit-data for GRIB I/O and numpy for numerical operations.
+Uses earthkit-data for GRIB I/O and numpy for numerical operations.
 
 Copyright 2020 ECMWF. Licensed under the Apache License version 2.0.
 """
@@ -30,13 +29,13 @@ logger = logging.getLogger("ecpoint")
 
 
 # =============================================================================
-# Section 1: Configuration (replaces InParam.mv + Check_Set_InParam.mv)
+# Configuration
 # =============================================================================
 
 # Lookup table: variable name -> (predictand param code, level type, level,
 #                                  minimum reliable value)
 VARIABLE_REGISTRY: dict[str, dict] = {
-    "Rainfall": {
+    "rainfall": {
         "predictand_code": 228.128,
         "level_type": "sfc",
         "level": 0,
@@ -48,7 +47,7 @@ VARIABLE_REGISTRY: dict[str, dict] = {
     },
 }
 
-# Predictor definitions for Rainfall (paramId, levelType, level)
+# Predictor definitions for rainfall (param_id, level_type, level)
 RAINFALL_PREDICTORS = [
     {"name": "tp", "param_id": 228.128, "level_type": "sfc", "level": 0},
     {"name": "cpr", "param_id": 143.128, "level_type": "sfc", "level": 0},
@@ -60,17 +59,13 @@ RAINFALL_PREDICTORS = [
 
 
 class EcPointConfig(BaseModel):
-    """All input parameters for an ecPoint run.
-
-    Replaces InParam.mv (parameter values) and Check_Set_InParam.mv (derived
-    parameters and validation).
-    """
+    """All input parameters for an ecPoint run."""
 
     # Variable to post-process
-    var_to_postprocess: Literal["Rainfall"] = "Rainfall"
+    var_to_postprocess: Literal["rainfall"] = "rainfall"
     accumulation_hours: int = Field(default=12, ge=0)
     calibration_version: str = "1.0.0"
-    run_mode: str = "Dev"
+    run_mode: str = "dev"
 
     # Forecast date/time/step ranges
     base_date_start: datetime.date = datetime.date(2020, 2, 19)
@@ -96,7 +91,7 @@ class EcPointConfig(BaseModel):
 
     # Directory paths
     main_dir: Path = Path.home()
-    scripts_dir: Path | None = None  # defaults to main_dir / "Scripts"
+    scripts_dir: Path | None = None  # defaults to main_dir / "scripts"
 
     # Formatting digits
     num_digits_base_time: int = 2
@@ -206,7 +201,7 @@ def load_config(config_path: Path | None = None, **overrides) -> EcPointConfig:
 
 
 # =============================================================================
-# Section 2: Validation (replaces the "# to complete" in Check_Set_InParam.mv)
+# Validation
 # =============================================================================
 
 
@@ -245,17 +240,13 @@ def validate_environment(cfg: EcPointConfig, paths: "EcPointPaths") -> None:
 
 
 # =============================================================================
-# Section 3: Path Management (replaces FileSystem.mv)
+# Path Management
 # =============================================================================
 
 
 @dataclass
 class EcPointPaths:
-    """All resolved directory and file paths for an ecPoint run.
-
-    Replaces the global path variables scattered across FileSystem.mv and
-    other Metview scripts.
-    """
+    """All resolved directory and file paths for an ecPoint run."""
 
     # Root directories
     main_dir: Path
@@ -266,17 +257,17 @@ class EcPointPaths:
     out_dir: Path
 
     # Working sub-directories
-    wdir_predict: Path       # 10_Predict_AllREM_GL
-    wdir_ens_pt_rain: Path   # 21_EnsPtRain_SingleREM_SA
-    wdir_grid_rain: Path     # 22_GridRain_ALLREM_GL
-    wdir_wt: Path            # 23_WT_AllREM_GL
-    wdir_cdf_sa: Path        # 30_PtRainCDF_SA
-    wdir_cdf_gl: Path        # 40_PtRainCDF_GL
+    wdir_predict: Path
+    wdir_ens_pt_rain: Path
+    wdir_grid_rain: Path
+    wdir_wt: Path
+    wdir_cdf_sa: Path
+    wdir_cdf_gl: Path
 
     # Output sub-directories
-    out_pt_perc: Path        # Pt_BiasCorr_RainPERC
-    out_grid_vals: Path      # Grid_BiasCorr_RainVALS
-    out_wt: Path             # WT
+    out_pt_perc: Path
+    out_grid_vals: Path
+    out_wt: Path
 
     # Calibration files
     map_func_dir: Path
@@ -291,22 +282,22 @@ class EcPointPaths:
 
 def build_paths(cfg: EcPointConfig) -> EcPointPaths:
     """Build all paths from the configuration."""
-    scripts_dir = cfg.scripts_dir or (cfg.main_dir / "Scripts")
-    database_dir = cfg.main_dir / "InputDB"
+    scripts_dir = cfg.scripts_dir or (cfg.main_dir / "scripts")
+    database_dir = cfg.main_dir / "input_db"
 
     var_acc_ver = (
-        f"ecPoint_{cfg.var_to_postprocess}"
+        f"ecpoint_{cfg.var_to_postprocess}"
         f"/{cfg.accumulation_str}"
-        f"/Vers{cfg.calibration_version}"
+        f"/v{cfg.calibration_version}"
     )
     temp_dir = cfg.main_dir / cfg.run_mode / var_acc_ver
-    work_dir = temp_dir / "WorkDir"
-    out_dir = temp_dir / "Forecasts"
+    work_dir = temp_dir / "work"
+    out_dir = temp_dir / "forecasts"
 
     map_func_dir = (
-        scripts_dir / "CompFiles" / "MapFunc" / cfg.run_mode / var_acc_ver
+        scripts_dir / "comp_files" / "map_func" / cfg.run_mode / var_acc_ver
     )
-    sample_dir = scripts_dir / "CompFiles" / "Samples" / "ECMWF_ENS_18km"
+    sample_dir = scripts_dir / "comp_files" / "samples" / "ecmwf_ens_18km"
 
     return EcPointPaths(
         main_dir=cfg.main_dir,
@@ -315,22 +306,22 @@ def build_paths(cfg: EcPointConfig) -> EcPointPaths:
         temp_dir=temp_dir,
         work_dir=work_dir,
         out_dir=out_dir,
-        wdir_predict=work_dir / "10_Predict_AllREM_GL",
-        wdir_ens_pt_rain=work_dir / "21_EnsPtRain_SingleREM_SA",
-        wdir_grid_rain=work_dir / "22_GridRain_ALLREM_GL",
-        wdir_wt=work_dir / "23_WT_AllREM_GL",
-        wdir_cdf_sa=work_dir / "30_PtRainCDF_SA",
-        wdir_cdf_gl=work_dir / "40_PtRainCDF_GL",
-        out_pt_perc=out_dir / "Pt_BiasCorr_RainPERC",
-        out_grid_vals=out_dir / "Grid_BiasCorr_RainVALS",
-        out_wt=out_dir / "WT",
+        wdir_predict=work_dir / "predict",
+        wdir_ens_pt_rain=work_dir / "ens_pt_rain",
+        wdir_grid_rain=work_dir / "grid_rain",
+        wdir_wt=work_dir / "weather_types",
+        wdir_cdf_sa=work_dir / "pt_rain_cdf_sa",
+        wdir_cdf_gl=work_dir / "pt_rain_cdf_gl",
+        out_pt_perc=out_dir / "pt_bias_corr_perc",
+        out_grid_vals=out_dir / "grid_bias_corr_vals",
+        out_wt=out_dir / "weather_types",
         map_func_dir=map_func_dir,
-        breakpoints_file=map_func_dir / "BreakPointsWT.txt",
-        fers_file=map_func_dir / "FERs.txt",
+        breakpoints_file=map_func_dir / "breakpoints_wt.txt",
+        fers_file=map_func_dir / "fers.txt",
         sample_dir=sample_dir,
-        global_sample_file=sample_dir / "Global" / "Global.grib",
+        global_sample_file=sample_dir / "global" / "global.grib",
         sub_area_sample_file=(
-            sample_dir / "SubArea" / cfg.sub_area_str / "SubArea.grib"
+            sample_dir / "sub_area" / cfg.sub_area_str / "sub_area.grib"
         ),
     )
 
@@ -338,10 +329,7 @@ def build_paths(cfg: EcPointConfig) -> EcPointPaths:
 def create_filesystem(
     cfg: EcPointConfig, paths: EcPointPaths
 ) -> None:
-    """Create the full directory tree for working and output files.
-
-    Replaces the nested shell("mkdir -p ...") calls in FileSystem.mv.
-    """
+    """Create the full directory tree for working and output files."""
     for base_date in _date_range(cfg.base_date_start, cfg.base_date_end):
         bd_str = base_date.strftime("%Y%m%d")
 
@@ -391,7 +379,7 @@ def create_filesystem(
 
 
 # =============================================================================
-# Section 4: GRIB Utilities (new — wraps earthkit-data)
+# GRIB Utilities
 # =============================================================================
 
 
@@ -440,7 +428,7 @@ def write_grib(fieldlist: ekd.FieldList, path: Path) -> None:
 
 
 def concat_grib_files(input_paths: list[Path], output_path: Path) -> None:
-    """Concatenate multiple GRIB files into one (replaces grib_copy)."""
+    """Concatenate multiple GRIB files into one."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldlists = [read_grib(p) for p in input_paths]
     combined = fieldlists[0]
@@ -450,7 +438,7 @@ def concat_grib_files(input_paths: list[Path], output_path: Path) -> None:
 
 
 # =============================================================================
-# Section 5: Calibration Data Loading (extracted from EnsPtRain_GridRain_WT.mv)
+# Calibration Data Loading
 # =============================================================================
 
 
@@ -471,10 +459,7 @@ class CalibrationData:
 
 
 def load_calibration(paths: EcPointPaths) -> CalibrationData:
-    """Load calibration tables from CSV files.
-
-    Replaces the read_table() calls in EnsPtRain_GridRain_WT.mv.
-    """
+    """Load calibration tables from CSV files."""
     # --- Breakpoints ---
     bp_df = pd.read_csv(paths.breakpoints_file)
     wt_codes = bp_df.iloc[:, 0].values.astype(np.int64)
@@ -514,7 +499,7 @@ def load_calibration(paths: EcPointPaths) -> CalibrationData:
 
 
 # =============================================================================
-# Section 6: Predictand & Predictor Computation (replaces Predict.mv)
+# Predictand & Predictor Computation
 # =============================================================================
 
 
@@ -587,10 +572,7 @@ def compute_predictors(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Compute predictand + predictors and save per-ensemble-member GRIB files.
-
-    Replaces Predict.mv.
-    """
+    """Compute predictand + predictors and save per-ensemble-member GRIB files."""
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -712,7 +694,7 @@ def compute_predictors(
 
         out_path = (
             paths.wdir_predict / date_time_str / sf_str / em_str
-            / f"Predict_{em_str}.grib"
+            / f"predict_{em_str}.grib"
         )
         write_grib(result, out_path)
 
@@ -720,7 +702,7 @@ def compute_predictors(
 
 
 # =============================================================================
-# Section 7: Post-Processing (replaces EnsPtRain_GridRain_WT.mv)
+# Post-Processing
 # =============================================================================
 
 
@@ -807,10 +789,7 @@ def postprocess_ensemble(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Post-process all ensemble members: classify WTs, apply FERs, save outputs.
-
-    Replaces EnsPtRain_GridRain_WT.mv.
-    """
+    """Post-process all ensemble members: classify WTs, apply FERs, save outputs."""
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -830,7 +809,7 @@ def postprocess_ensemble(
         # a. Read predictand and predictors
         pred_path = (
             paths.wdir_predict / date_time_str / sf_str / em_str
-            / f"Predict_{em_str}.grib"
+            / f"predict_{em_str}.grib"
         )
         pred_data = read_grib(pred_path)
         template_field = pred_data[0]
@@ -865,7 +844,7 @@ def postprocess_ensemble(
         )
         grid_bc_path = (
             paths.wdir_grid_rain / date_time_str / sf_str
-            / f"GridRain_{em_str}.grib"
+            / f"grid_rain_{em_str}.grib"
         )
         write_grib(grid_bc_fl, grid_bc_path)
 
@@ -879,7 +858,7 @@ def postprocess_ensemble(
         wt_fl = create_fieldlist_from_arrays([wt_output], template_field)
         wt_path = (
             paths.wdir_wt / date_time_str / sf_str
-            / f"WT_{em_str}.grib"
+            / f"wt_{em_str}.grib"
         )
         write_grib(wt_fl, wt_path)
 
@@ -918,7 +897,7 @@ def postprocess_ensemble(
 
             sa_path = (
                 paths.wdir_ens_pt_rain / date_time_str / sf_str / sa_str
-                / f"EnsPtRain_{sa_str}_{em_str}.grib"
+                / f"ens_pt_rain_{sa_str}_{em_str}.grib"
             )
             write_grib(sa_fl, sa_path)
 
@@ -926,7 +905,7 @@ def postprocess_ensemble(
 
 
 # =============================================================================
-# Section 8: Percentile Computation & Merging (replaces PtRainPerc_MergeSA.mv)
+# Percentile Computation & Merging
 # =============================================================================
 
 
@@ -937,14 +916,7 @@ def compute_percentiles_and_merge(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Compute percentiles from CDFs per sub-area, then merge to global field.
-
-    Replaces PtRainPerc_MergeSA.mv.
-
-    NOTE: The original code had a bug on line 33 where the ensemble member
-    loop was hardcoded to 'for CodeEM = EnsMemS to 2'. This implementation
-    correctly uses cfg.ensemble_member_end.
-    """
+    """Compute percentiles from CDFs per sub-area, then merge to global field."""
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -968,7 +940,7 @@ def compute_percentiles_and_merge(
             em_str = str(em_idx).zfill(cfg.num_digits_ensemble_member)
             cdf_path = (
                 paths.wdir_ens_pt_rain / date_time_str / sf_str / sa_str
-                / f"EnsPtRain_{sa_str}_{em_str}.grib"
+                / f"ens_pt_rain_{sa_str}_{em_str}.grib"
             )
             cdf_data = read_grib(cdf_path)
             cdf_vals = get_all_values(cdf_data)  # list of arrays
@@ -1019,14 +991,14 @@ def compute_percentiles_and_merge(
     result = ekd.FieldList.from_array(values_list, metadata_list)
 
     out_path = (
-        paths.wdir_cdf_gl / date_time_str / sf_str / "PtRainCDF_GL.grib"
+        paths.wdir_cdf_gl / date_time_str / sf_str / "pt_rain_cdf_gl.grib"
     )
     write_grib(result, out_path)
     logger.info("  Percentiles saved to %s", out_path)
 
 
 # =============================================================================
-# Section 9: Output File Management (replaces shell mv/grib_copy in ecPoint.mv)
+# Output File Management
 # =============================================================================
 
 
@@ -1037,11 +1009,7 @@ def move_outputs(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Move output files from working directories to the final output database.
-
-    Replaces the shell("mv ...") and shell("grib_copy ...") calls in
-    ecPoint.mv.
-    """
+    """Move output files from working directories to the final output database."""
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -1051,13 +1019,13 @@ def move_outputs(
 
     logger.info("  Moving output files to output database")
 
-    # 1. Point Rainfall CDFs (single file move)
+    # 1. Point rainfall CDFs (single file move)
     src_cdf = (
-        paths.wdir_cdf_gl / date_time_str / sf_str / "PtRainCDF_GL.grib"
+        paths.wdir_cdf_gl / date_time_str / sf_str / "pt_rain_cdf_gl.grib"
     )
     dst_cdf = (
         paths.out_pt_perc / date_time_str / sf_str
-        / f"Pt_BC_PERC_{acc_str}_{bd_str}_{bt_str}_{sf_str}.grib"
+        / f"pt_bc_perc_{acc_str}_{bd_str}_{bt_str}_{sf_str}.grib"
     )
     dst_cdf.parent.mkdir(parents=True, exist_ok=True)
     if src_cdf.is_file():
@@ -1065,27 +1033,27 @@ def move_outputs(
 
     # 2. Grid-bias corrected rainfall (concatenate all EM files)
     grid_rain_dir = paths.wdir_grid_rain / date_time_str / sf_str
-    grid_files = sorted(grid_rain_dir.glob("GridRain_*.grib"))
+    grid_files = sorted(grid_rain_dir.glob("grid_rain_*.grib"))
     if grid_files:
         dst_grid = (
             paths.out_grid_vals / date_time_str / sf_str
-            / f"Grid_BC_VALS_{acc_str}_{bd_str}_{bt_str}_{sf_str}.grib"
+            / f"grid_bc_vals_{acc_str}_{bd_str}_{bt_str}_{sf_str}.grib"
         )
         concat_grib_files(grid_files, dst_grid)
 
     # 3. Weather types (concatenate all EM files)
     wt_dir = paths.wdir_wt / date_time_str / sf_str
-    wt_files = sorted(wt_dir.glob("WT_*.grib"))
+    wt_files = sorted(wt_dir.glob("wt_*.grib"))
     if wt_files:
         dst_wt = (
             paths.out_wt / date_time_str / sf_str
-            / f"WT_{acc_str}_{bd_str}_{bt_str}_{sf_str}.grib"
+            / f"wt_{acc_str}_{bd_str}_{bt_str}_{sf_str}.grib"
         )
         concat_grib_files(wt_files, dst_wt)
 
 
 # =============================================================================
-# Section 10: Helpers
+# Helpers
 # =============================================================================
 
 
@@ -1108,16 +1076,12 @@ def _step_range(start: int, final: int, disc: int) -> list[int]:
 
 
 # =============================================================================
-# Section 11: Main Orchestrator (replaces ecPoint.mv)
+# Main Orchestrator
 # =============================================================================
 
 
 def run_ecpoint(cfg: EcPointConfig) -> None:
-    """Run the full ecPoint post-processing pipeline.
-
-    This is the main entry point that orchestrates the entire workflow,
-    replacing ecPoint.mv.
-    """
+    """Run the full ecPoint post-processing pipeline."""
     logger.info("=" * 60)
     logger.info("ecPoint — Forecasts for Point Values")
     logger.info("  Variable: %s", cfg.var_to_postprocess)
@@ -1202,7 +1166,7 @@ def run_ecpoint(cfg: EcPointConfig) -> None:
 
 
 # =============================================================================
-# Section 12: CLI Entry Point
+# CLI Entry Point
 # =============================================================================
 
 
@@ -1214,10 +1178,10 @@ def run_ecpoint(cfg: EcPointConfig) -> None:
     default=None,
     help="Path to a JSON configuration file.",
 )
-@click.option("--var", "var_to_postprocess", default="Rainfall")
+@click.option("--var", "var_to_postprocess", default="rainfall")
 @click.option("--acc", "accumulation_hours", type=int, default=12)
 @click.option("--cal-version", "calibration_version", default="1.0.0")
-@click.option("--run-mode", default="Dev")
+@click.option("--run-mode", default="dev")
 @click.option(
     "--date-start",
     type=click.DateTime(formats=["%Y-%m-%d"]),
@@ -1272,13 +1236,13 @@ def main(
 
     # Build config from file or CLI options
     overrides = {}
-    if var_to_postprocess != "Rainfall":
+    if var_to_postprocess != "rainfall":
         overrides["var_to_postprocess"] = var_to_postprocess
     if accumulation_hours != 12:
         overrides["accumulation_hours"] = accumulation_hours
     if calibration_version != "1.0.0":
         overrides["calibration_version"] = calibration_version
-    if run_mode != "Dev":
+    if run_mode != "dev":
         overrides["run_mode"] = run_mode
     if date_start is not None:
         overrides["base_date_start"] = date_start.date()

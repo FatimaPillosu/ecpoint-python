@@ -1,4 +1,4 @@
-"""Tests for EcPointConfig (Section 1 of ecpoint.py)."""
+"""Tests for EcPointConfig."""
 
 import datetime
 
@@ -13,7 +13,7 @@ class TestConfigDefaults:
 
     def test_default_config_is_valid(self):
         cfg = EcPointConfig()
-        assert cfg.var_to_postprocess == "Rainfall"
+        assert cfg.var_to_postprocess == "rainfall"
         assert cfg.accumulation_hours == 12
         assert cfg.calibration_version == "1.0.0"
 
@@ -126,7 +126,7 @@ class TestConfigValidation:
     def test_invalid_accumulation_for_variable(self):
         with pytest.raises(ValidationError, match="accumulation_hours"):
             EcPointConfig(
-                var_to_postprocess="Rainfall", accumulation_hours=6
+                var_to_postprocess="rainfall", accumulation_hours=6
             )
 
     def test_negative_step_start(self):

@@ -1,4 +1,4 @@
-"""Tests for calibration data loading (Section 5 of ecpoint.py)."""
+"""Tests for calibration data loading."""
 
 import textwrap
 
@@ -72,7 +72,7 @@ class TestLoadRealCalibrationFiles:
         from pathlib import Path
         p = Path(__file__).parent.parent.parent / (
             "ecPoint/CompFiles/MapFunc/Dev/"
-            "ecPoint_Rainfall/012/Vers1.0.0/BreakPointsWT.txt"
+            "ecpoint_rainfall/012/v1.0.0/breakpoints_wt.txt"
         )
         if not p.exists():
             pytest.skip("Real calibration files not available")
@@ -83,7 +83,7 @@ class TestLoadRealCalibrationFiles:
         from pathlib import Path
         p = Path(__file__).parent.parent.parent / (
             "ecPoint/CompFiles/MapFunc/Dev/"
-            "ecPoint_Rainfall/012/Vers1.0.0/FERs.txt"
+            "ecpoint_rainfall/012/v1.0.0/fers.txt"
         )
         if not p.exists():
             pytest.skip("Real calibration files not available")

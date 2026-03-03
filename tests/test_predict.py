@@ -1,4 +1,4 @@
-"""Tests for predictor computation (Section 6 of ecpoint.py)."""
+"""Tests for predictor computation."""
 
 import numpy as np
 import pytest

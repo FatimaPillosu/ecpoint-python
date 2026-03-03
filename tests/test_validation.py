@@ -1,4 +1,4 @@
-"""Tests for environment validation (Section 2 of ecpoint.py)."""
+"""Tests for environment validation."""
 
 import pytest
 

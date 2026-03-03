@@ -1,4 +1,4 @@
-"""Tests for percentile computation and merging (Section 8 of ecpoint.py)."""
+"""Tests for percentile computation and merging."""
 
 import numpy as np
 import pytest
