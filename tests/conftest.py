@@ -35,7 +35,6 @@ def small_config(tmp_path):
         step_disc=12,
         ensemble_member_start=0,
         ensemble_member_end=2,
-        num_sub_areas=5,
         percentiles=list(range(1, 100)),
         main_dir=tmp_path,
     )

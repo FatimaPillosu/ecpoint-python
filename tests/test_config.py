@@ -42,14 +42,6 @@ class TestDerivedProperties:
         cfg = EcPointConfig(accumulation_hours=12, num_digits_acc=3)
         assert cfg.accumulation_str == "012"
 
-    def test_sub_area_str(self):
-        cfg = EcPointConfig(num_sub_areas=10, num_digits_sub_area=2)
-        assert cfg.sub_area_str == "10"
-
-    def test_sub_area_str_padding(self):
-        cfg = EcPointConfig(num_sub_areas=5, num_digits_sub_area=2)
-        assert cfg.sub_area_str == "05"
-
     def test_numpy_dtype(self):
         import numpy as np
         cfg = EcPointConfig(float_precision="float64")
@@ -93,15 +85,6 @@ class TestConfigValidation:
     def test_step_start_after_final(self):
         with pytest.raises(ValidationError, match="step_start"):
             EcPointConfig(step_start=120, step_final=12)
-
-    def test_invalid_num_sub_areas(self):
-        with pytest.raises(ValidationError, match="num_sub_areas"):
-            EcPointConfig(num_sub_areas=7)
-
-    def test_valid_num_sub_areas(self):
-        for n in [5, 10, 20]:
-            cfg = EcPointConfig(num_sub_areas=n)
-            assert cfg.num_sub_areas == n
 
     def test_percentile_out_of_range_low(self):
         with pytest.raises(ValidationError, match="1-99"):
@@ -148,14 +131,12 @@ class TestLoadConfig:
             "accumulation_hours": 12,
             "ensemble_member_start": 0,
             "ensemble_member_end": 10,
-            "num_sub_areas": 5,
         }
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps(config_data))
 
         cfg = load_config(config_file)
         assert cfg.ensemble_member_end == 10
-        assert cfg.num_sub_areas == 5
 
     def test_load_with_overrides(self, tmp_path):
         import json
@@ -168,5 +149,5 @@ class TestLoadConfig:
         assert cfg.ensemble_member_end == 20
 
     def test_load_no_file(self):
-        cfg = load_config(None, num_sub_areas=5)
-        assert cfg.num_sub_areas == 5
+        cfg = load_config(None, ensemble_member_end=20)
+        assert cfg.ensemble_member_end == 20

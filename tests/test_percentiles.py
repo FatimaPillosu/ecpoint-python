@@ -1,4 +1,4 @@
-"""Tests for percentile computation and merging."""
+"""Tests for percentile computation."""
 
 import numpy as np
 import pytest
@@ -45,65 +45,3 @@ class TestPercentileComputation:
         data = np.zeros((50, 100))
         result = np.percentile(data, list(range(1, 100)), axis=0)
         np.testing.assert_allclose(result, 0.0)
-
-
-class TestSubAreaMerging:
-    """Test the sub-area to global field merging logic."""
-
-    def test_basic_merge(self):
-        """Merging sub-areas should concatenate along the grid axis."""
-        num_sa = 5
-        num_perc = 3
-        n_grid_sa = 10
-
-        # Create percentile arrays per sub-area
-        sa_percentiles = [
-            np.full((num_perc, n_grid_sa), fill_value=float(i))
-            for i in range(num_sa)
-        ]
-
-        # Merge
-        global_perc = np.concatenate(sa_percentiles, axis=1)
-
-        assert global_perc.shape == (num_perc, num_sa * n_grid_sa)
-        # First SA should have value 0, second SA value 1, etc.
-        np.testing.assert_allclose(global_perc[:, 0], [0.0, 0.0, 0.0])
-        np.testing.assert_allclose(global_perc[:, 10], [1.0, 1.0, 1.0])
-        np.testing.assert_allclose(global_perc[:, 40], [4.0, 4.0, 4.0])
-
-    def test_merge_preserves_percentile_ordering(self):
-        """After merging, percentile ordering should be preserved per grid point."""
-        rng = np.random.default_rng(42)
-        num_sa = 3
-        n_grid_sa = 20
-        perc_values = [10, 50, 90]
-
-        sa_percentiles = []
-        for _ in range(num_sa):
-            # Generate random data and compute percentiles
-            data = rng.random((100, n_grid_sa))
-            perc = np.percentile(data, perc_values, axis=0)
-            sa_percentiles.append(perc)
-
-        global_perc = np.concatenate(sa_percentiles, axis=1)
-
-        # p10 <= p50 <= p90 for all grid points
-        assert np.all(global_perc[0] <= global_perc[1])
-        assert np.all(global_perc[1] <= global_perc[2])
-
-    def test_sub_area_slicing(self):
-        """Verify the sub-area extraction formula from postprocess."""
-        n_grid_sa = 100
-        n_grid_global = 500  # 5 sub-areas
-        num_sa = 5
-
-        global_field = np.arange(n_grid_global, dtype=np.float64)
-
-        for sa_code in range(1, num_sa + 1):
-            grid_sa_start = n_grid_sa * (sa_code - 1)
-            grid_sa_end = grid_sa_start + n_grid_sa
-            sa_slice = global_field[grid_sa_start:grid_sa_end]
-
-            assert len(sa_slice) == n_grid_sa
-            assert sa_slice[0] == n_grid_sa * (sa_code - 1)
-            assert sa_slice[-1] == n_grid_sa * sa_code - 1

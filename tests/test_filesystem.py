@@ -25,7 +25,6 @@ class TestBuildPaths:
 
     def test_sample_paths(self, small_paths):
         assert small_paths.global_sample_file.name == "global.grib"
-        assert small_paths.sub_area_sample_file.name == "sub_area.grib"
 
     def test_var_acc_ver_in_path(self, small_paths):
         path_str = str(small_paths.temp_dir)
@@ -52,21 +51,6 @@ class TestCreateFilesystem:
         assert (small_paths.wdir_grid_rain / dt_step).is_dir()
         assert (small_paths.wdir_wt / dt_step).is_dir()
         assert (small_paths.out_pt_perc / dt_step).is_dir()
-
-    def test_sub_area_directories(self, small_config, small_paths):
-        create_filesystem(small_config, small_paths)
-
-        bd_str = small_config.base_date_start.strftime("%Y%m%d")
-        bt_str = str(small_config.base_time_start).zfill(
-            small_config.num_digits_base_time
-        )
-        step_f = small_config.step_start + small_config.accumulation_hours
-        sf_str = str(step_f).zfill(small_config.num_digits_step)
-        dt_step = f"{bd_str}{bt_str}/{sf_str}"
-
-        for sa in range(1, small_config.num_sub_areas + 1):
-            sa_str = str(sa).zfill(small_config.num_digits_sub_area)
-            assert (small_paths.wdir_ens_pt_rain / dt_step / sa_str).is_dir()
 
     def test_ensemble_member_directories(self, small_config, small_paths):
         create_filesystem(small_config, small_paths)

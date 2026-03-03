@@ -32,7 +32,6 @@ class TestValidateEnvironment:
         assert "Breakpoints" in msg
         assert "FERs" in msg
         assert "Global sample" in msg
-        assert "Sub-area sample" in msg
 
     def test_passes_when_all_files_exist(self, small_config, small_paths):
         """Validation should pass when all required files are present."""
@@ -41,7 +40,6 @@ class TestValidateEnvironment:
             small_paths.breakpoints_file,
             small_paths.fers_file,
             small_paths.global_sample_file,
-            small_paths.sub_area_sample_file,
         ]:
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("dummy")

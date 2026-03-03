@@ -81,9 +81,6 @@ class EcPointConfig(BaseModel):
     ensemble_member_start: int = Field(default=0, ge=0)
     ensemble_member_end: int = Field(default=50, ge=0)
 
-    # Sub-areas
-    num_sub_areas: int = 10
-
     # Percentiles (1-99)
     percentiles: list[int] = Field(
         default_factory=lambda: list(range(1, 100))
@@ -98,21 +95,11 @@ class EcPointConfig(BaseModel):
     num_digits_step: int = 3
     num_digits_acc: int = 3
     num_digits_ensemble_member: int = 2
-    num_digits_sub_area: int = 2
 
     # Precision
     float_precision: Literal["float32", "float64"] = "float32"
 
     # --- Validators ---
-
-    @field_validator("num_sub_areas")
-    @classmethod
-    def _check_num_sub_areas(cls, v: int) -> int:
-        if v not in {5, 10, 20}:
-            raise ValueError(
-                f"num_sub_areas must be 5, 10 or 20, got {v}"
-            )
-        return v
 
     @field_validator("percentiles")
     @classmethod
@@ -172,10 +159,6 @@ class EcPointConfig(BaseModel):
         return str(self.accumulation_hours).zfill(self.num_digits_acc)
 
     @property
-    def sub_area_str(self) -> str:
-        return str(self.num_sub_areas).zfill(self.num_digits_sub_area)
-
-    @property
     def variable_info(self) -> dict:
         return VARIABLE_REGISTRY[self.var_to_postprocess]
 
@@ -229,10 +212,6 @@ def validate_environment(cfg: EcPointConfig, paths: "EcPointPaths") -> None:
     if not gl_file.is_file():
         errors.append(f"Global sample GRIB not found: {gl_file}")
 
-    sa_file = paths.sub_area_sample_file
-    if not sa_file.is_file():
-        errors.append(f"Sub-area sample GRIB not found: {sa_file}")
-
     if errors:
         raise FileNotFoundError(
             "Environment validation failed:\n  - " + "\n  - ".join(errors)
@@ -258,11 +237,10 @@ class EcPointPaths:
 
     # Working sub-directories
     wdir_predict: Path
-    wdir_ens_pt_rain: Path
+    wdir_pt_rain_cdf: Path
     wdir_grid_rain: Path
     wdir_wt: Path
-    wdir_cdf_sa: Path
-    wdir_cdf_gl: Path
+    wdir_percentiles: Path
 
     # Output sub-directories
     out_pt_perc: Path
@@ -277,7 +255,6 @@ class EcPointPaths:
     # Sample GRIB files
     sample_dir: Path
     global_sample_file: Path
-    sub_area_sample_file: Path
 
 
 def build_paths(cfg: EcPointConfig) -> EcPointPaths:
@@ -307,11 +284,10 @@ def build_paths(cfg: EcPointConfig) -> EcPointPaths:
         work_dir=work_dir,
         out_dir=out_dir,
         wdir_predict=work_dir / "predict",
-        wdir_ens_pt_rain=work_dir / "ens_pt_rain",
+        wdir_pt_rain_cdf=work_dir / "pt_rain_cdf",
         wdir_grid_rain=work_dir / "grid_rain",
         wdir_wt=work_dir / "weather_types",
-        wdir_cdf_sa=work_dir / "pt_rain_cdf_sa",
-        wdir_cdf_gl=work_dir / "pt_rain_cdf_gl",
+        wdir_percentiles=work_dir / "percentiles",
         out_pt_perc=out_dir / "pt_bias_corr_perc",
         out_grid_vals=out_dir / "grid_bias_corr_vals",
         out_wt=out_dir / "weather_types",
@@ -320,9 +296,6 @@ def build_paths(cfg: EcPointConfig) -> EcPointPaths:
         fers_file=map_func_dir / "fers.txt",
         sample_dir=sample_dir,
         global_sample_file=sample_dir / "global" / "global.grib",
-        sub_area_sample_file=(
-            sample_dir / "sub_area" / cfg.sub_area_str / "sub_area.grib"
-        ),
     )
 
 
@@ -348,22 +321,15 @@ def create_filesystem(
 
                 # Directories that are per date/time/step
                 for d in [
+                    paths.wdir_pt_rain_cdf,
                     paths.wdir_grid_rain,
                     paths.wdir_wt,
-                    paths.wdir_cdf_gl,
+                    paths.wdir_percentiles,
                     paths.out_pt_perc,
                     paths.out_grid_vals,
                     paths.out_wt,
                 ]:
                     (d / dt_step).mkdir(parents=True, exist_ok=True)
-
-                # Directories that also split by sub-area
-                for sub_area in range(1, cfg.num_sub_areas + 1):
-                    sa_str = str(sub_area).zfill(cfg.num_digits_sub_area)
-                    for d in [paths.wdir_ens_pt_rain, paths.wdir_cdf_sa]:
-                        (d / dt_step / sa_str).mkdir(
-                            parents=True, exist_ok=True
-                        )
 
                 # Directories that also split by ensemble member
                 for ens_mem in range(
@@ -798,10 +764,6 @@ def postprocess_ensemble(
 
     logger.info("  Post-processing ensemble members")
 
-    # Read sub-area sample for later use
-    sa_sample = read_grib(paths.sub_area_sample_file)
-    n_grid_sa = len(sa_sample[0].values)
-
     for em_idx in range(cfg.ensemble_member_start, cfg.ensemble_member_end + 1):
         em_str = str(em_idx).zfill(cfg.num_digits_ensemble_member)
         logger.info("    EM n.%s", em_str)
@@ -813,12 +775,6 @@ def postprocess_ensemble(
         )
         pred_data = read_grib(pred_path)
         template_field = pred_data[0]
-
-        # Extract metadata from the first field
-        grib_base_date = get_metadata(pred_data[0], "dataDate")
-        grib_base_time = get_metadata(pred_data[0], "dataTime")
-        grib_step = get_metadata(pred_data[0], "stepRange")
-        grib_em_number = get_metadata(pred_data[0], "number")
 
         all_values = get_all_values(pred_data)
         predictand = all_values[0]  # first field = predictand (TP)
@@ -862,112 +818,64 @@ def postprocess_ensemble(
         )
         write_grib(wt_fl, wt_path)
 
-        # f. Save point rainfall CDF split by sub-areas
-        pp_info = cfg.variable_info
-        sa_metadata_overrides = {
-            "class": "od",
-            "stream": "enfo",
-            "type": "pf",
-            "number": em_idx,
-            "expver": "0001",
-            "paramId": int(pp_info["pp_code"]),
-            "level": pp_info["pp_level"],
-            "levtype": pp_info["pp_level_type"],
-            "dataDate": grib_base_date,
-            "dataTime": grib_base_time,
-            "stepRange": str(grib_step),
-        }
-        sa_template = sa_sample[0]
-
-        for sa_code in range(1, cfg.num_sub_areas + 1):
-            sa_str = str(sa_code).zfill(cfg.num_digits_sub_area)
-
-            # Extract the sub-area slice from the global CDF
-            grid_sa_start = n_grid_sa * (sa_code - 1)
-            grid_sa_end = grid_sa_start + n_grid_sa
-
-            sa_values = [
-                cdf[grid_sa_start:grid_sa_end] for cdf in cdf_list
-            ]
-
-            sa_metadata_list = [
-                sa_template.metadata().override(**sa_metadata_overrides)
-            ] * len(sa_values)
-            sa_fl = ekd.FieldList.from_array(sa_values, sa_metadata_list)
-
-            sa_path = (
-                paths.wdir_ens_pt_rain / date_time_str / sf_str / sa_str
-                / f"ens_pt_rain_{sa_str}_{em_str}.grib"
-            )
-            write_grib(sa_fl, sa_path)
+        # f. Save point rainfall CDF (global field)
+        cdf_fl = create_fieldlist_from_arrays(cdf_list, template_field)
+        cdf_path = (
+            paths.wdir_pt_rain_cdf / date_time_str / sf_str
+            / f"pt_rain_cdf_{em_str}.grib"
+        )
+        write_grib(cdf_fl, cdf_path)
 
     logger.info("  Post-processing complete for %s step %s", date_time_str, sf_str)
 
 
 # =============================================================================
-# Percentile Computation & Merging
+# Percentile Computation
 # =============================================================================
 
 
-def compute_percentiles_and_merge(
+def compute_percentiles(
     cfg: EcPointConfig,
     paths: EcPointPaths,
     base_date: datetime.date,
     base_time: int,
     step_start: int,
 ) -> None:
-    """Compute percentiles from CDFs per sub-area, then merge to global field."""
+    """Compute percentiles from global CDFs across all ensemble members."""
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
     step_f = step_start + cfg.accumulation_hours
     sf_str = str(step_f).zfill(cfg.num_digits_step)
 
-    logger.info("  Percentiles computation & merging")
+    logger.info("  Percentiles computation")
 
-    percentiles_per_sa: list[np.ndarray] = []
-    # Will be list of arrays, each shape (num_percentiles, n_grid_sa)
-
-    for sa_code in range(1, cfg.num_sub_areas + 1):
-        sa_str = str(sa_code).zfill(cfg.num_digits_sub_area)
-        logger.info("    Reading SA n.%d", sa_code)
-
-        # Read CDFs for all ensemble members for this sub-area
-        all_cdf_values = []
-        for em_idx in range(
-            cfg.ensemble_member_start, cfg.ensemble_member_end + 1
-        ):
-            em_str = str(em_idx).zfill(cfg.num_digits_ensemble_member)
-            cdf_path = (
-                paths.wdir_ens_pt_rain / date_time_str / sf_str / sa_str
-                / f"ens_pt_rain_{sa_str}_{em_str}.grib"
-            )
-            cdf_data = read_grib(cdf_path)
-            cdf_vals = get_all_values(cdf_data)  # list of arrays
-            all_cdf_values.extend(cdf_vals)
-
-        # Stack all CDF values: shape (n_total_cdf_fields, n_grid_sa)
-        cdf_matrix = np.stack(all_cdf_values, axis=0)
-
-        # Compute percentiles along the field axis (axis=0)
-        # Result shape: (num_percentiles, n_grid_sa)
-        perc_values = np.percentile(
-            cdf_matrix, cfg.percentiles, axis=0
+    # Read CDFs for all ensemble members (full global grid)
+    all_cdf_values = []
+    for em_idx in range(
+        cfg.ensemble_member_start, cfg.ensemble_member_end + 1
+    ):
+        em_str = str(em_idx).zfill(cfg.num_digits_ensemble_member)
+        cdf_path = (
+            paths.wdir_pt_rain_cdf / date_time_str / sf_str
+            / f"pt_rain_cdf_{em_str}.grib"
         )
-        percentiles_per_sa.append(perc_values)
+        cdf_data = read_grib(cdf_path)
+        all_cdf_values.extend(get_all_values(cdf_data))
 
-    # Merge sub-areas into global field
-    logger.info("    Merging %d SAs into global field", cfg.num_sub_areas)
-    num_perc = len(cfg.percentiles)
+    # Stack: shape (n_total_cdf_fields, n_grid_global)
+    cdf_matrix = np.stack(all_cdf_values, axis=0)
 
-    # percentiles_per_sa[sa] has shape (num_perc, n_grid_sa)
-    # We need to concatenate along the grid dimension for each percentile
-    global_percentiles = np.concatenate(percentiles_per_sa, axis=1)
-    # shape: (num_perc, n_grid_global)
+    # Compute percentiles along the field axis (axis=0)
+    # Result shape: (num_percentiles, n_grid_global)
+    global_percentiles = np.percentile(
+        cdf_matrix, cfg.percentiles, axis=0
+    )
 
     # Create output GRIB using global sample as template
     gl_sample = read_grib(paths.global_sample_file)
     gl_template = gl_sample[0]
+    num_perc = len(cfg.percentiles)
 
     pp_info = cfg.variable_info
     values_list = [global_percentiles[i] for i in range(num_perc)]
@@ -991,7 +899,8 @@ def compute_percentiles_and_merge(
     result = ekd.FieldList.from_array(values_list, metadata_list)
 
     out_path = (
-        paths.wdir_cdf_gl / date_time_str / sf_str / "pt_rain_cdf_gl.grib"
+        paths.wdir_percentiles / date_time_str / sf_str
+        / "percentiles.grib"
     )
     write_grib(result, out_path)
     logger.info("  Percentiles saved to %s", out_path)
@@ -1019,9 +928,9 @@ def move_outputs(
 
     logger.info("  Moving output files to output database")
 
-    # 1. Point rainfall CDFs (single file move)
+    # 1. Percentiles (single file move)
     src_cdf = (
-        paths.wdir_cdf_gl / date_time_str / sf_str / "pt_rain_cdf_gl.grib"
+        paths.wdir_percentiles / date_time_str / sf_str / "percentiles.grib"
     )
     dst_cdf = (
         paths.out_pt_perc / date_time_str / sf_str
@@ -1146,8 +1055,8 @@ def run_ecpoint(cfg: EcPointConfig) -> None:
                     cfg, paths, calibration, base_date, base_time, step_s
                 )
 
-                logger.info("Step 3: Percentiles computation & merging")
-                compute_percentiles_and_merge(
+                logger.info("Step 3: Percentiles computation")
+                compute_percentiles(
                     cfg, paths, base_date, base_time, step_s
                 )
 
@@ -1200,7 +1109,6 @@ def run_ecpoint(cfg: EcPointConfig) -> None:
 @click.option("--step-disc", type=int, default=6)
 @click.option("--ens-start", "ensemble_member_start", type=int, default=0)
 @click.option("--ens-end", "ensemble_member_end", type=int, default=50)
-@click.option("--num-sa", "num_sub_areas", type=int, default=10)
 @click.option("--main-dir", type=click.Path(path_type=Path), default=None)
 @click.option(
     "-v", "--verbose", count=True, help="Increase verbosity (-v, -vv)."
@@ -1221,7 +1129,6 @@ def main(
     step_disc,
     ensemble_member_start,
     ensemble_member_end,
-    num_sub_areas,
     main_dir,
     verbose,
 ):
@@ -1264,8 +1171,6 @@ def main(
         overrides["ensemble_member_start"] = ensemble_member_start
     if ensemble_member_end != 50:
         overrides["ensemble_member_end"] = ensemble_member_end
-    if num_sub_areas != 10:
-        overrides["num_sub_areas"] = num_sub_areas
     if main_dir is not None:
         overrides["main_dir"] = main_dir
 
