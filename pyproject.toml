@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecpoint"
+version = "2.0.0"
+description = "Post-processing system for NWP ensemble forecasts"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "earthkit-data>=0.10",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pydantic>=2.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-tmp-files>=0.0.2",
+]
+
+[project.scripts]
+ecpoint = "ecpoint.ecpoint:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
