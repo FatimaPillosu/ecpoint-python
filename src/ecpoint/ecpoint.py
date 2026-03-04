@@ -1305,12 +1305,13 @@ def _step_range(start: int, final: int, disc: int) -> list[int]:
 
 @dataclass
 class PointResult:
-    """Result for one (date, time, step) iteration in point mode."""
+    """Result for one ensemble member at one (date, time, step) in point mode."""
 
     date: datetime.date
     time: int
     step_start: int
     step_end: int
+    ensemble_member: int
     lat: float
     lon: float
     wt_code: int
@@ -1477,16 +1478,17 @@ def write_point_csv(
 ) -> Path:
     """Write point-mode results to CSV.
 
-    Output columns: date, time, step_start, step_end, lat, lon, wt_code,
-    grid_bc, then one column per requested percentile (e.g., p1, p2, ..., p99).
+    Output columns: date, time, step_start, step_end, ensemble_member, lat, lon,
+    wt_code, grid_bc, then one column per requested percentile (e.g., p1, p2, ..., p99).
+    One row per ensemble member per (date, time, step) combination.
     """
     out_dir = paths.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"point_{cfg.point_lat}_{cfg.point_lon}.csv"
 
     perc_headers = [f"p{p}" for p in cfg.percentiles]
-    header = ["date", "time", "step_start", "step_end", "lat", "lon",
-              "wt_code", "grid_bc"] + perc_headers
+    header = ["date", "time", "step_start", "step_end", "ensemble_member",
+              "lat", "lon", "wt_code", "grid_bc"] + perc_headers
 
     rows = []
     for r in results:
@@ -1495,6 +1497,7 @@ def write_point_csv(
             str(r.time).zfill(2),
             r.step_start,
             r.step_end,
+            r.ensemble_member,
             r.lat,
             r.lon,
             r.wt_code,
@@ -1573,36 +1576,42 @@ def run_ecpoint_point(cfg: EcPointConfig) -> None:
 
                 # Step 2: Post-process each ensemble member in memory
                 all_cdf_values: list[np.ndarray] = []
-                last_wt_code = 0
-                last_grid_bc = 0.0
+                member_results: list[tuple[int, int, float]] = []
 
-                for predictand, predictors in em_data:
+                for em_idx, (predictand, predictors) in enumerate(
+                    em_data, start=cfg.ensemble_member_start
+                ):
                     grid_bc_vals, wt_codes, cdf_list = _process_single_member(
                         predictand, predictors, calibration,
                         cfg.min_predictand_value,
                     )
                     all_cdf_values.extend(cdf_list)
-                    last_wt_code = int(wt_codes[0])
-                    last_grid_bc = float(grid_bc_vals[0])
+                    member_results.append(
+                        (em_idx, int(wt_codes[0]), float(grid_bc_vals[0]))
+                    )
 
                 # Step 3: Compute percentiles across all EMs + FERs
                 cdf_matrix = np.stack(all_cdf_values, axis=0)  # (n_total, 1)
                 perc_values = np.percentile(
                     cdf_matrix, cfg.percentiles, axis=0
                 )  # (n_perc, 1)
+                perc_list = [float(perc_values[i, 0])
+                             for i in range(len(cfg.percentiles))]
 
-                all_results.append(PointResult(
-                    date=base_date,
-                    time=base_time,
-                    step_start=step_s,
-                    step_end=step_f,
-                    lat=cfg.point_lat,
-                    lon=cfg.point_lon,
-                    wt_code=last_wt_code,
-                    grid_bc=last_grid_bc,
-                    percentile_values=[float(perc_values[i, 0])
-                                       for i in range(len(cfg.percentiles))],
-                ))
+                # One row per ensemble member
+                for em_idx, wt_code, grid_bc in member_results:
+                    all_results.append(PointResult(
+                        date=base_date,
+                        time=base_time,
+                        step_start=step_s,
+                        step_end=step_f,
+                        ensemble_member=em_idx,
+                        lat=cfg.point_lat,
+                        lon=cfg.point_lon,
+                        wt_code=wt_code,
+                        grid_bc=grid_bc,
+                        percentile_values=perc_list,
+                    ))
 
     # Write CSV output
     out_path = write_point_csv(cfg, paths, all_results)

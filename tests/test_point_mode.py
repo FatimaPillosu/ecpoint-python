@@ -193,6 +193,7 @@ class TestWritePointCSV:
                 time=0,
                 step_start=0,
                 step_end=12,
+                ensemble_member=0,
                 lat=51.5,
                 lon=-0.1,
                 wt_code=11111,
@@ -202,13 +203,14 @@ class TestWritePointCSV:
             PointResult(
                 date=datetime.date(2020, 2, 19),
                 time=0,
-                step_start=6,
-                step_end=18,
+                step_start=0,
+                step_end=12,
+                ensemble_member=1,
                 lat=51.5,
                 lon=-0.1,
                 wt_code=22222,
                 grid_bc=1.23,
-                percentile_values=[0.3, 1.2, 3.0],
+                percentile_values=[0.8, 2.4, 5.1],
             ),
         ]
 
@@ -218,10 +220,14 @@ class TestWritePointCSV:
         df = pd.read_csv(out_path)
         assert len(df) == 2
         assert list(df.columns) == [
-            "date", "time", "step_start", "step_end", "lat", "lon",
-            "wt_code", "grid_bc", "p10", "p50", "p90",
+            "date", "time", "step_start", "step_end", "ensemble_member",
+            "lat", "lon", "wt_code", "grid_bc", "p10", "p50", "p90",
         ]
+        # Each row has its own member's wt_code and grid_bc
+        assert df.iloc[0]["ensemble_member"] == 0
         assert df.iloc[0]["wt_code"] == 11111
+        assert df.iloc[1]["ensemble_member"] == 1
+        assert df.iloc[1]["wt_code"] == 22222
         assert df.iloc[1]["grid_bc"] == pytest.approx(1.23, abs=0.001)
 
     def test_csv_filename_includes_coordinates(self, tmp_path):
@@ -238,6 +244,7 @@ class TestWritePointCSV:
                 time=0,
                 step_start=0,
                 step_end=12,
+                ensemble_member=0,
                 lat=51.5,
                 lon=-0.1,
                 wt_code=0,

@@ -186,17 +186,19 @@ run_ecpoint(cfg)  # automatically uses point-mode pipeline, outputs CSV
 
 ### CSV output format
 
-Point mode writes a CSV file to the output directory with one row per (date, time, step) combination:
+Point mode writes a CSV file to the output directory with one row per ensemble member per (date, time, step) combination:
 
 ```csv
-date,time,step_start,step_end,lat,lon,wt_code,grid_bc,p1,p2,...,p99
-20200219,00,0,12,51.5,-0.1,11234,2.4500,0.1000,0.3000,...,6.8000
+date,time,step_start,step_end,ensemble_member,lat,lon,wt_code,grid_bc,p1,p2,...,p99
+20200219,00,0,12,0,51.5,-0.1,11234,2.4500,0.1000,0.3000,...,6.8000
+20200219,00,0,12,1,51.5,-0.1,21134,1.8700,0.1000,0.3000,...,6.8000
 ```
 
 Columns:
 - `date`, `time`: model initialisation date and UTC hour
 - `step_start`, `step_end`: forecast lead-time window
+- `ensemble_member`: ensemble member index
 - `lat`, `lon`: point coordinates
-- `wt_code`: dominant weather type code from the last ensemble member
-- `grid_bc`: grid-scale bias-corrected rainfall (mean of CDF)
-- `pN`: one column per requested percentile
+- `wt_code`: weather type code for this ensemble member
+- `grid_bc`: grid-scale bias-corrected rainfall (mean of CDF) for this member
+- `pN`: one column per requested percentile (same across all members for a given date/time/step, computed from all members combined)
