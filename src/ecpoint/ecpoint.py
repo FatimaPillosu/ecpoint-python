@@ -532,10 +532,10 @@ def load_calibration(paths: EcPointPaths) -> CalibrationData:
 # =============================================================================
 
 
-def _trapezoidal_time_average(
+def _weighted_time_average(
     f1: np.ndarray, f2: np.ndarray, f3: np.ndarray
 ) -> np.ndarray:
-    """Trapezoidal-rule time average over 3 timesteps.
+    """Weighted time average over 3 timesteps.
 
     Formula: (0.5*f1 + f2 + 0.5*f3) / 2
     Used for wind speed at 700 hPa and CAPE.
@@ -550,7 +550,7 @@ def _compute_steps(
 
     For the accumulation window [step_start, step_start + accumulation]:
       - step1, step2, step3 are the start, midpoint, and end of the window,
-        used for time-averaging wind speed and CAPE via the trapezoidal rule.
+        used for time-averaging wind speed and CAPE via a weighted average.
     For 24h solar radiation:
       - step1_sr, step2_sr define a 24h window ending at or before step_f.
         If step_f <= 24, the window is [0, 24]; otherwise [step_f-24, step_f].
@@ -692,14 +692,14 @@ def compute_predictors(
 
         # --- Predictor 3: Wind Speed at 700 hPa ---
         # Time-averaged u and v wind components at 700 hPa over the accumulation
-        # period using trapezoidal rule, then combined into wind speed magnitude.
+        # period using a weighted average, then combined into wind speed magnitude.
         # Indicates the strength of synoptic-scale forcing.
-        u_avg = _trapezoidal_time_average(
+        u_avg = _weighted_time_average(
             u700_1[em_idx].values,
             u700_2[em_idx].values,
             u700_3[em_idx].values,
         )
-        v_avg = _trapezoidal_time_average(
+        v_avg = _weighted_time_average(
             v700_1[em_idx].values,
             v700_2[em_idx].values,
             v700_3[em_idx].values,
@@ -709,7 +709,7 @@ def compute_predictors(
         # --- Predictor 4: CAPE ---
         # Time-averaged Convective Available Potential Energy; measures
         # atmospheric instability and potential for convective precipitation.
-        cape_vals = _trapezoidal_time_average(
+        cape_vals = _weighted_time_average(
             cape_1[em_idx].values,
             cape_2[em_idx].values,
             cape_3[em_idx].values,

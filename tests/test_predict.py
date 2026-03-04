@@ -1,7 +1,7 @@
 """Tests for predictor computation.
 
 Tests the pure-numpy components of predictor calculation without requiring
-GRIB files: trapezoidal time averaging, forecast step index computation,
+GRIB files: weighted time averaging, forecast step index computation,
 input file path construction, and the core precipitation/wind/radiation formulas.
 """
 
@@ -12,16 +12,16 @@ from ecpoint.ecpoint import (
     _build_input_file_path,
     _check_input_files_exist,
     _compute_steps,
-    _trapezoidal_time_average,
+    _weighted_time_average,
 )
 
 
-class TestTrapezoidalTimeAverage:
+class TestWeightedTimeAverage:
     """Test the (0.5*f1 + f2 + 0.5*f3) / 2 formula."""
 
     def test_uniform_values(self):
         f = np.array([10.0, 10.0, 10.0])
-        result = _trapezoidal_time_average(f, f, f)
+        result = _weighted_time_average(f, f, f)
         np.testing.assert_allclose(result, [10.0, 10.0, 10.0])
 
     def test_known_values(self):
@@ -29,12 +29,12 @@ class TestTrapezoidalTimeAverage:
         f2 = np.array([4.0])
         f3 = np.array([6.0])
         # (0.5*2 + 4 + 0.5*6) / 2 = (1 + 4 + 3) / 2 = 4.0
-        result = _trapezoidal_time_average(f1, f2, f3)
+        result = _weighted_time_average(f1, f2, f3)
         np.testing.assert_allclose(result, [4.0])
 
     def test_zero_input(self):
         z = np.zeros(5)
-        result = _trapezoidal_time_average(z, z, z)
+        result = _weighted_time_average(z, z, z)
         np.testing.assert_allclose(result, np.zeros(5))
 
     def test_large_array(self):
@@ -42,7 +42,7 @@ class TestTrapezoidalTimeAverage:
         f1 = rng.random(10000)
         f2 = rng.random(10000)
         f3 = rng.random(10000)
-        result = _trapezoidal_time_average(f1, f2, f3)
+        result = _weighted_time_average(f1, f2, f3)
         expected = (0.5 * f1 + f2 + 0.5 * f3) / 2.0
         np.testing.assert_allclose(result, expected)
 
