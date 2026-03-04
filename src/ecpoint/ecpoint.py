@@ -37,6 +37,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 import earthkit.data as ekd
 
+try:
+    from polytope_feature.polytope import Polytope, Request
+    from polytope_feature.shapes import Box, Select
+
+    HAS_POLYTOPE = True
+except ImportError:
+    HAS_POLYTOPE = False
+
 logger = logging.getLogger("ecpoint")
 
 
@@ -138,6 +146,14 @@ class EcPointConfig(BaseModel):
     # Floating-point precision for numerical computations
     float_precision: Literal["float32", "float64"] = "float32"
 
+    # Point mode: when both lat and lon are set, only process a single point
+    # instead of the full global grid. Uses polytope for efficient extraction.
+    point_lat: float | None = Field(default=None, ge=-90, le=90)
+    point_lon: float | None = Field(default=None, ge=-180, le=360)
+    # Data source: "local" reads from GRIB files on disk, "polytope" requests
+    # point data from ECMWF's Polytope service (requires polytope-client).
+    data_source: Literal["local", "polytope"] = "local"
+
     # --- Validators ---
 
     @field_validator("percentiles")
@@ -185,6 +201,18 @@ class EcPointConfig(BaseModel):
                 f"for {self.var_to_postprocess}. "
                 f"Valid: {var_info['valid_accumulations']}"
             )
+        # Point mode: both lat and lon must be set together
+        if (self.point_lat is None) != (self.point_lon is None):
+            raise ValueError(
+                "point_lat and point_lon must both be set (point mode) "
+                "or both be None (grid mode)"
+            )
+        # Remote polytope source only makes sense in point mode
+        if self.data_source == "polytope" and not self.is_point_mode:
+            raise ValueError(
+                "data_source='polytope' requires point mode "
+                "(set point_lat and point_lon)"
+            )
         return self
 
     # --- Derived properties ---
@@ -208,6 +236,10 @@ class EcPointConfig(BaseModel):
     @property
     def numpy_dtype(self) -> np.dtype:
         return np.dtype(self.float_precision)
+
+    @property
+    def is_point_mode(self) -> bool:
+        return self.point_lat is not None and self.point_lon is not None
 
 
 def load_config(config_path: Path | None = None, **overrides) -> EcPointConfig:
@@ -247,9 +279,11 @@ def validate_environment(cfg: EcPointConfig, paths: "EcPointPaths") -> None:
     if not fer_file.is_file():
         errors.append(f"FERs file not found: {fer_file}")
 
-    gl_file = paths.global_sample_file
-    if not gl_file.is_file():
-        errors.append(f"Global sample GRIB not found: {gl_file}")
+    # Global sample GRIB is only needed in grid mode (for output GRIB template)
+    if not cfg.is_point_mode:
+        gl_file = paths.global_sample_file
+        if not gl_file.is_file():
+            errors.append(f"Global sample GRIB not found: {gl_file}")
 
     if errors:
         raise FileNotFoundError(
@@ -463,6 +497,116 @@ def concat_grib_files(input_paths: list[Path], output_path: Path) -> None:
     for fl in fieldlists[1:]:
         combined = combined + fl
     write_grib(combined, output_path)
+
+
+# =============================================================================
+# Point Extraction (Polytope)
+# =============================================================================
+
+
+def _require_polytope() -> None:
+    """Raise a clear error if polytope is not installed."""
+    if not HAS_POLYTOPE:
+        raise ImportError(
+            "polytope-python is required for point mode. "
+            "Install it with: pip install ecpoint[polytope]"
+        )
+
+
+def extract_point_from_grib(
+    path: Path, lat: float, lon: float, ensemble_index: int
+) -> np.ndarray:
+    """Extract a single grid-point value from a local GRIB file using polytope.
+
+    Opens the GRIB as an xarray dataset, constructs a polytope Select request
+    for the nearest point, and returns a 1-element numpy array.
+    """
+    import xarray as xr
+
+    _require_polytope()
+
+    ds = xr.open_dataset(str(path), engine="cfgrib")
+
+    # Identify the data variable (first non-coordinate variable)
+    data_var = list(ds.data_vars)[0]
+    array = ds[data_var]
+
+    options = {"longitude": {"cyclic": [0, 360.0]}}
+    p = Polytope(datacube=array, axis_options=options)
+
+    # Select the nearest point — polytope snaps to the closest grid point.
+    request = Request(
+        Select("latitude", [lat]),
+        Select("longitude", [lon % 360]),  # normalise to [0, 360)
+        Select("number", [ensemble_index]),
+    )
+    result = p.retrieve(request)
+
+    # Walk the result tree to extract the value
+    values = []
+    _collect_leaf_values(result, values)
+    if not values:
+        raise ValueError(
+            f"No data retrieved for lat={lat}, lon={lon} from {path}"
+        )
+    return np.array(values[:1], dtype=np.float64)
+
+
+def _collect_leaf_values(node, values: list) -> None:
+    """Recursively collect leaf values from a polytope IndexTree."""
+    if not node.children:
+        if node.result is not None:
+            values.append(float(node.result))
+    else:
+        for child in node.children:
+            _collect_leaf_values(child, values)
+
+
+def extract_point_from_polytope_service(
+    request_params: dict, lat: float, lon: float
+) -> np.ndarray:
+    """Request point data from ECMWF's Polytope web service.
+
+    Uses the polytope-client to retrieve data for a single lat/lon
+    without downloading full global fields. Requires ECMWF API credentials.
+
+    Args:
+        request_params: MARS-like request dict (param, date, time, step, etc.)
+        lat: Latitude of the point.
+        lon: Longitude of the point.
+
+    Returns:
+        1-element numpy array with the extracted value.
+    """
+    try:
+        from polytope_client import Client  # type: ignore[import-untyped]
+    except ImportError:
+        raise ImportError(
+            "polytope-client is required for remote data access. "
+            "Install it with: pip install polytope-client"
+        ) from None
+
+    client = Client()
+
+    # Add point location to the MARS request
+    request_params = {
+        **request_params,
+        "feature": {
+            "type": "Point",
+            "points": [[lat, lon]],
+        },
+    }
+
+    result = client.retrieve("ecmwf-mars", request_params)
+
+    # polytope-client returns bytes (GRIB or bufr); decode with earthkit
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".grib") as tmp:
+        tmp.write(result)
+        tmp.flush()
+        fl = ekd.from_source("file", tmp.name)
+        return np.array([fl[0].values.flat[0]], dtype=np.float64)
 
 
 # =============================================================================
@@ -865,6 +1009,44 @@ def apply_fers(
     return [cdf_values[:, i] for i in range(n_fers)]
 
 
+def _process_single_member(
+    predictand: np.ndarray,
+    predictors: list[np.ndarray],
+    calibration: CalibrationData,
+    min_predictand_value: float,
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    """Core post-processing for one ensemble member (mode-agnostic).
+
+    Works identically on full grids (n_grid ~ 2M) and single points (n_grid = 1).
+
+    Returns:
+        grid_bc_vals: Grid-scale bias-corrected rainfall (mean of CDF).
+        wt_codes: Weather type codes per grid point.
+        cdf_list: List of n_fers arrays, each of shape (n_grid,).
+    """
+    # Threshold small values to zero
+    predictand = np.where(
+        predictand >= min_predictand_value, predictand, 0.0
+    )
+
+    # Classify weather types
+    wt_codes, wt_indices = classify_weather_types(predictors, calibration)
+
+    # Apply FERs to create CDF
+    cdf_list = apply_fers(predictand, wt_indices, calibration)
+
+    # Grid-bias corrected rainfall = mean of CDF values
+    grid_bc_vals = np.mean(np.stack(cdf_list, axis=1), axis=1)
+
+    # Mark sub-threshold points with sentinel WT code
+    no_wt_code = int("9" * calibration.num_predictors)
+    wt_codes = np.where(
+        predictand < min_predictand_value, no_wt_code, wt_codes
+    ).astype(np.int64)
+
+    return grid_bc_vals, wt_codes, cdf_list
+
+
 def postprocess_ensemble(
     cfg: EcPointConfig,
     paths: EcPointPaths,
@@ -905,23 +1087,14 @@ def postprocess_ensemble(
 
         all_values = get_all_values(pred_data)
         predictand = all_values[0]  # first field = predictand (TP)
-
-        # Threshold small values to zero (packing-precision artifacts)
-        predictand = np.where(
-            predictand >= cfg.min_predictand_value, predictand, 0.0
-        )
-
-        # Predictors are fields 2 onward (CPR, TP, wspd700, CAPE, SR24h)
         predictors = all_values[1:]
 
-        # b. Classify weather types
-        wt_codes, wt_indices = classify_weather_types(predictors, calibration)
+        # b-c. Classify weather types and apply FERs
+        grid_bc_vals, wt_codes, cdf_list = _process_single_member(
+            predictand, predictors, calibration, cfg.min_predictand_value
+        )
 
-        # c. Apply FERs to create CDF
-        cdf_list = apply_fers(predictand, wt_indices, calibration)
-
-        # d. Save grid-bias corrected rainfall (mean of CDF values)
-        grid_bc_vals = np.mean(np.stack(cdf_list, axis=1), axis=1)
+        # d. Save grid-bias corrected rainfall
         grid_bc_fl = create_fieldlist_from_arrays(
             [grid_bc_vals], template_field
         )
@@ -931,16 +1104,10 @@ def postprocess_ensemble(
         )
         write_grib(grid_bc_fl, grid_bc_path)
 
-        # e. Save WT codes (with a special "no-WT" sentinel for sub-threshold values).
-        # Grid points with TP below the minimum threshold are assigned a code of
-        # all 9s (e.g., 99999 for 5 predictors) to indicate "no classification".
-        no_wt_code = int("9" * calibration.num_predictors)
-        wt_output = np.where(
-            predictand < cfg.min_predictand_value,
-            no_wt_code,
-            wt_codes,
-        ).astype(np.float64)
-        wt_fl = create_fieldlist_from_arrays([wt_output], template_field)
+        # e. Save WT codes
+        wt_fl = create_fieldlist_from_arrays(
+            [wt_codes.astype(np.float64)], template_field
+        )
         wt_path = (
             paths.wdir_wt / date_time_str / sf_str
             / f"wt_{em_str}.grib"
@@ -1132,6 +1299,318 @@ def _step_range(start: int, final: int, disc: int) -> list[int]:
 
 
 # =============================================================================
+# Point-Mode Pipeline
+# =============================================================================
+
+
+@dataclass
+class PointResult:
+    """Result for one (date, time, step) iteration in point mode."""
+
+    date: datetime.date
+    time: int
+    step_start: int
+    step_end: int
+    lat: float
+    lon: float
+    wt_code: int
+    grid_bc: float
+    percentile_values: list[float]
+
+
+def _compute_predictors_point(
+    cfg: EcPointConfig,
+    paths: EcPointPaths,
+    base_date: datetime.date,
+    base_time: int,
+    step_start: int,
+) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """Compute predictand + predictors at a single point for all ensemble members.
+
+    Returns a list of (predictand, predictors) tuples, one per ensemble member.
+    Each array has shape (1,).
+    """
+    bd_str = base_date.strftime("%Y%m%d")
+    bt_str = str(base_time).zfill(cfg.num_digits_base_time)
+    date_time_str = f"{bd_str}{bt_str}"
+    acc = cfg.accumulation_hours
+    lat = cfg.point_lat
+    lon = cfg.point_lon
+
+    steps = _compute_steps(step_start, acc, cfg.step_final)
+    nds = cfg.num_digits_step
+    db_dir = paths.database_dir
+
+    # Build paths for all required input files (same as grid mode)
+    required_files = {
+        "tp_step1": _build_input_file_path(db_dir, date_time_str, steps["step1"], nds, 228),
+        "tp_step3": _build_input_file_path(db_dir, date_time_str, steps["step3"], nds, 228),
+        "cp_step1": _build_input_file_path(db_dir, date_time_str, steps["step1"], nds, 143),
+        "cp_step3": _build_input_file_path(db_dir, date_time_str, steps["step3"], nds, 143),
+        "u700_step1": _build_input_file_path(db_dir, date_time_str, steps["step1"], nds, 131),
+        "u700_step2": _build_input_file_path(db_dir, date_time_str, steps["step2"], nds, 131),
+        "u700_step3": _build_input_file_path(db_dir, date_time_str, steps["step3"], nds, 131),
+        "v700_step1": _build_input_file_path(db_dir, date_time_str, steps["step1"], nds, 132),
+        "v700_step2": _build_input_file_path(db_dir, date_time_str, steps["step2"], nds, 132),
+        "v700_step3": _build_input_file_path(db_dir, date_time_str, steps["step3"], nds, 132),
+        "cape_step1": _build_input_file_path(db_dir, date_time_str, steps["step1"], nds, 59),
+        "cape_step2": _build_input_file_path(db_dir, date_time_str, steps["step2"], nds, 59),
+        "cape_step3": _build_input_file_path(db_dir, date_time_str, steps["step3"], nds, 59),
+        "sr_step1": _build_input_file_path(db_dir, date_time_str, steps["step1_sr"], nds, 22),
+        "sr_step2": _build_input_file_path(db_dir, date_time_str, steps["step2_sr"], nds, 22),
+    }
+    _check_input_files_exist(required_files)
+
+    _require_polytope()
+
+    results = []
+    for em_idx in range(cfg.ensemble_member_start, cfg.ensemble_member_end + 1):
+        # Extract point values from each input field
+        tp_1 = extract_point_from_grib(required_files["tp_step1"], lat, lon, em_idx)
+        tp_3 = extract_point_from_grib(required_files["tp_step3"], lat, lon, em_idx)
+        cp_1 = extract_point_from_grib(required_files["cp_step1"], lat, lon, em_idx)
+        cp_3 = extract_point_from_grib(required_files["cp_step3"], lat, lon, em_idx)
+        u700_1 = extract_point_from_grib(required_files["u700_step1"], lat, lon, em_idx)
+        u700_2 = extract_point_from_grib(required_files["u700_step2"], lat, lon, em_idx)
+        u700_3 = extract_point_from_grib(required_files["u700_step3"], lat, lon, em_idx)
+        v700_1 = extract_point_from_grib(required_files["v700_step1"], lat, lon, em_idx)
+        v700_2 = extract_point_from_grib(required_files["v700_step2"], lat, lon, em_idx)
+        v700_3 = extract_point_from_grib(required_files["v700_step3"], lat, lon, em_idx)
+        cape_1 = extract_point_from_grib(required_files["cape_step1"], lat, lon, em_idx)
+        cape_2 = extract_point_from_grib(required_files["cape_step2"], lat, lon, em_idx)
+        cape_3 = extract_point_from_grib(required_files["cape_step3"], lat, lon, em_idx)
+        sr_1 = extract_point_from_grib(required_files["sr_step1"], lat, lon, em_idx)
+        sr_2 = extract_point_from_grib(required_files["sr_step2"], lat, lon, em_idx)
+
+        # Same predictor computation as grid mode, on (1,) arrays
+        tp_vals = (tp_3 - tp_1) * 1000.0
+        cp_vals = (cp_3 - cp_1) * 1000.0
+        cpr_vals = np.where(tp_vals > 0, cp_vals / tp_vals, 0.0)
+        tp_pred_vals = tp_vals.copy()
+
+        u_avg = _weighted_time_average(u700_1, u700_2, u700_3)
+        v_avg = _weighted_time_average(v700_1, v700_2, v700_3)
+        wspd700_vals = np.sqrt(u_avg**2 + v_avg**2)
+
+        cape_vals = _weighted_time_average(cape_1, cape_2, cape_3)
+        sr24h_vals = (sr_2 - sr_1) / 86400.0
+
+        predictand = tp_vals
+        predictors = [cpr_vals, tp_pred_vals, wspd700_vals, cape_vals, sr24h_vals]
+        results.append((predictand, predictors))
+
+    return results
+
+
+def _compute_predictors_point_remote(
+    cfg: EcPointConfig,
+    base_date: datetime.date,
+    base_time: int,
+    step_start: int,
+) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """Compute predictand + predictors at a single point using ECMWF Polytope service.
+
+    Requests only the needed point data from ECMWF servers, avoiding full field downloads.
+    Returns a list of (predictand, predictors) tuples, one per ensemble member.
+    """
+    acc = cfg.accumulation_hours
+    lat = cfg.point_lat
+    lon = cfg.point_lon
+    steps = _compute_steps(step_start, acc, cfg.step_final)
+
+    bd_str = base_date.strftime("%Y-%m-%d")
+
+    def _request(param_id: int, step: int) -> np.ndarray:
+        params = {
+            "class": "od",
+            "stream": "enfo",
+            "type": "pf",
+            "expver": "0001",
+            "date": bd_str,
+            "time": f"{base_time:02d}:00:00",
+            "step": str(step),
+            "param": str(param_id),
+        }
+        return extract_point_from_polytope_service(params, lat, lon)
+
+    results = []
+    for em_idx in range(cfg.ensemble_member_start, cfg.ensemble_member_end + 1):
+        tp_1 = _request(228, steps["step1"])
+        tp_3 = _request(228, steps["step3"])
+        cp_1 = _request(143, steps["step1"])
+        cp_3 = _request(143, steps["step3"])
+        u700_1 = _request(131, steps["step1"])
+        u700_2 = _request(131, steps["step2"])
+        u700_3 = _request(131, steps["step3"])
+        v700_1 = _request(132, steps["step1"])
+        v700_2 = _request(132, steps["step2"])
+        v700_3 = _request(132, steps["step3"])
+        cape_1 = _request(59, steps["step1"])
+        cape_2 = _request(59, steps["step2"])
+        cape_3 = _request(59, steps["step3"])
+        sr_1 = _request(22, steps["step1_sr"])
+        sr_2 = _request(22, steps["step2_sr"])
+
+        tp_vals = (tp_3 - tp_1) * 1000.0
+        cp_vals = (cp_3 - cp_1) * 1000.0
+        cpr_vals = np.where(tp_vals > 0, cp_vals / tp_vals, 0.0)
+        tp_pred_vals = tp_vals.copy()
+
+        u_avg = _weighted_time_average(u700_1, u700_2, u700_3)
+        v_avg = _weighted_time_average(v700_1, v700_2, v700_3)
+        wspd700_vals = np.sqrt(u_avg**2 + v_avg**2)
+
+        cape_vals = _weighted_time_average(cape_1, cape_2, cape_3)
+        sr24h_vals = (sr_2 - sr_1) / 86400.0
+
+        predictand = tp_vals
+        predictors = [cpr_vals, tp_pred_vals, wspd700_vals, cape_vals, sr24h_vals]
+        results.append((predictand, predictors))
+
+    return results
+
+
+def write_point_csv(
+    cfg: EcPointConfig,
+    paths: EcPointPaths,
+    results: list[PointResult],
+) -> Path:
+    """Write point-mode results to CSV.
+
+    Output columns: date, time, step_start, step_end, lat, lon, wt_code,
+    grid_bc, then one column per requested percentile (e.g., p1, p2, ..., p99).
+    """
+    out_dir = paths.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"point_{cfg.point_lat}_{cfg.point_lon}.csv"
+
+    perc_headers = [f"p{p}" for p in cfg.percentiles]
+    header = ["date", "time", "step_start", "step_end", "lat", "lon",
+              "wt_code", "grid_bc"] + perc_headers
+
+    rows = []
+    for r in results:
+        row = [
+            r.date.strftime("%Y%m%d"),
+            str(r.time).zfill(2),
+            r.step_start,
+            r.step_end,
+            r.lat,
+            r.lon,
+            r.wt_code,
+            f"{r.grid_bc:.4f}",
+        ] + [f"{v:.4f}" for v in r.percentile_values]
+        rows.append(row)
+
+    df = pd.DataFrame(rows, columns=header)
+    df.to_csv(out_path, index=False)
+
+    logger.info("Point-mode results written to %s", out_path)
+    return out_path
+
+
+def run_ecpoint_point(cfg: EcPointConfig) -> None:
+    """Run ecPoint in point mode: process a single lat/lon location.
+
+    Extracts data at the configured point using polytope, runs the same
+    WT classification and FER bias correction, and outputs CSV.
+    """
+    logger.info("=" * 60)
+    logger.info("ecPoint — Point Mode")
+    logger.info("  Variable: %s", cfg.var_to_postprocess)
+    logger.info("  Location: lat=%.4f, lon=%.4f", cfg.point_lat, cfg.point_lon)
+    logger.info("  Data source: %s", cfg.data_source)
+    logger.info("=" * 60)
+
+    # Phase 1: Setup
+    logger.info("")
+    logger.info("Phase 1: Setting up environment")
+    paths = build_paths(cfg)
+    validate_environment(cfg, paths)
+
+    logger.info("  Loading calibration data...")
+    calibration = load_calibration(paths)
+    logger.info(
+        "  Loaded %d weather types, %d FERs",
+        calibration.num_weather_types,
+        calibration.num_fers,
+    )
+
+    # Phase 2: Process each (date, time, step) combination
+    logger.info("")
+    logger.info("Phase 2: Point post-processing")
+
+    dates = _date_range(cfg.base_date_start, cfg.base_date_end)
+    times = _time_range(
+        cfg.base_time_start, cfg.base_time_end, cfg.base_time_disc
+    )
+    steps = _step_range(cfg.step_start, cfg.step_final, cfg.step_disc)
+
+    all_results: list[PointResult] = []
+    total_iterations = len(dates) * len(times) * len(steps)
+    current = 0
+
+    for base_date in dates:
+        for base_time in times:
+            for step_s in steps:
+                current += 1
+                step_f = step_s + cfg.accumulation_hours
+                logger.info(
+                    "[%d/%d] %s - %02d UTC - (t+%d, t+%d)",
+                    current, total_iterations,
+                    base_date.strftime("%Y%m%d"), base_time, step_s, step_f,
+                )
+
+                # Step 1: Extract point predictors
+                if cfg.data_source == "polytope":
+                    em_data = _compute_predictors_point_remote(
+                        cfg, base_date, base_time, step_s
+                    )
+                else:
+                    em_data = _compute_predictors_point(
+                        cfg, paths, base_date, base_time, step_s
+                    )
+
+                # Step 2: Post-process each ensemble member in memory
+                all_cdf_values: list[np.ndarray] = []
+                last_wt_code = 0
+                last_grid_bc = 0.0
+
+                for predictand, predictors in em_data:
+                    grid_bc_vals, wt_codes, cdf_list = _process_single_member(
+                        predictand, predictors, calibration,
+                        cfg.min_predictand_value,
+                    )
+                    all_cdf_values.extend(cdf_list)
+                    last_wt_code = int(wt_codes[0])
+                    last_grid_bc = float(grid_bc_vals[0])
+
+                # Step 3: Compute percentiles across all EMs + FERs
+                cdf_matrix = np.stack(all_cdf_values, axis=0)  # (n_total, 1)
+                perc_values = np.percentile(
+                    cdf_matrix, cfg.percentiles, axis=0
+                )  # (n_perc, 1)
+
+                all_results.append(PointResult(
+                    date=base_date,
+                    time=base_time,
+                    step_start=step_s,
+                    step_end=step_f,
+                    lat=cfg.point_lat,
+                    lon=cfg.point_lon,
+                    wt_code=last_wt_code,
+                    grid_bc=last_grid_bc,
+                    percentile_values=[float(perc_values[i, 0])
+                                       for i in range(len(cfg.percentiles))],
+                ))
+
+    # Write CSV output
+    out_path = write_point_csv(cfg, paths, all_results)
+    logger.info("")
+    logger.info("Point-mode processing completed! Output: %s", out_path)
+
+
+# =============================================================================
 # Main Orchestrator
 # =============================================================================
 
@@ -1150,6 +1629,9 @@ def run_ecpoint(cfg: EcPointConfig) -> None:
         final database.
     After processing, temporary working directories are cleaned up.
     """
+    if cfg.is_point_mode:
+        return run_ecpoint_point(cfg)
+
     logger.info("=" * 60)
     logger.info("ecPoint — Forecasts for Point Values")
     logger.info("  Variable: %s", cfg.var_to_postprocess)
@@ -1270,6 +1752,18 @@ def run_ecpoint(cfg: EcPointConfig) -> None:
 @click.option("--ens-end", "ensemble_member_end", type=int, default=50)
 @click.option("--main-dir", type=click.Path(path_type=Path), default=None)
 @click.option(
+    "--lat", "point_lat", type=float, default=None,
+    help="Latitude for point mode (-90 to 90). Enables point-mode processing.",
+)
+@click.option(
+    "--lon", "point_lon", type=float, default=None,
+    help="Longitude for point mode (-180 to 360). Enables point-mode processing.",
+)
+@click.option(
+    "--data-source", type=click.Choice(["local", "polytope"]), default="local",
+    help="Data source: 'local' reads GRIB from disk, 'polytope' from ECMWF service.",
+)
+@click.option(
     "-v", "--verbose", count=True, help="Increase verbosity (-v, -vv)."
 )
 def main(
@@ -1289,6 +1783,9 @@ def main(
     ensemble_member_start,
     ensemble_member_end,
     main_dir,
+    point_lat,
+    point_lon,
+    data_source,
     verbose,
 ):
     """ecPoint: Post-processing system for NWP ensemble forecasts."""
@@ -1334,6 +1831,12 @@ def main(
         overrides["ensemble_member_end"] = ensemble_member_end
     if main_dir is not None:
         overrides["main_dir"] = main_dir
+    if point_lat is not None:
+        overrides["point_lat"] = point_lat
+    if point_lon is not None:
+        overrides["point_lon"] = point_lon
+    if data_source != "local":
+        overrides["data_source"] = data_source
 
     cfg = load_config(config_path, **overrides)
     run_ecpoint(cfg)

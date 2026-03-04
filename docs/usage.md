@@ -54,6 +54,9 @@ ecpoint --config config.json --date-start 2021-01-01 --date-end 2021-01-31
 | `--ens-start` | First ensemble member number | `0` |
 | `--ens-end` | Last ensemble member number | `50` |
 | `--main-dir` | Project root directory | User home |
+| `--lat` | Latitude for point mode (-90 to 90) | None |
+| `--lon` | Longitude for point mode (-180 to 360) | None |
+| `--data-source` | Data source: `local` or `polytope` | `local` |
 | `-v`, `--verbose` | Increase verbosity (repeat for debug) | `0` (WARNING) |
 
 ### Verbosity levels
@@ -136,3 +139,64 @@ cfg = EcPointConfig(
     # ... other parameters
 )
 ```
+
+## Point mode
+
+Point mode processes a single lat/lon location instead of the full global grid. This is much faster and outputs CSV instead of GRIB.
+
+### CLI — point mode with local GRIB files
+
+```bash
+ecpoint --lat 51.5 --lon -0.1 \
+  --var rainfall --acc 12 \
+  --date-start 2020-02-19 --date-end 2020-02-19 \
+  --main-dir /path/to/project -v
+```
+
+### CLI — point mode with ECMWF Polytope service
+
+Retrieves only the needed point data from ECMWF servers, avoiding full field downloads:
+
+```bash
+ecpoint --lat 51.5 --lon -0.1 --data-source polytope \
+  --var rainfall --acc 12 \
+  --date-start 2020-02-19 --date-end 2020-02-19 \
+  --main-dir /path/to/project -v
+```
+
+Requires the `polytope` extra: `pip install ecpoint[polytope]`
+
+### Python API — point mode
+
+```python
+from ecpoint import EcPointConfig, run_ecpoint
+
+cfg = EcPointConfig(
+    point_lat=51.5,
+    point_lon=-0.1,
+    var_to_postprocess="rainfall",
+    accumulation_hours=12,
+    base_date_start=datetime.date(2020, 2, 19),
+    base_date_end=datetime.date(2020, 2, 19),
+    main_dir=Path("/path/to/project"),
+)
+
+run_ecpoint(cfg)  # automatically uses point-mode pipeline, outputs CSV
+```
+
+### CSV output format
+
+Point mode writes a CSV file to the output directory with one row per (date, time, step) combination:
+
+```csv
+date,time,step_start,step_end,lat,lon,wt_code,grid_bc,p1,p2,...,p99
+20200219,00,0,12,51.5,-0.1,11234,2.4500,0.1000,0.3000,...,6.8000
+```
+
+Columns:
+- `date`, `time`: model initialisation date and UTC hour
+- `step_start`, `step_end`: forecast lead-time window
+- `lat`, `lon`: point coordinates
+- `wt_code`: dominant weather type code from the last ensemble member
+- `grid_bc`: grid-scale bias-corrected rainfall (mean of CDF)
+- `pN`: one column per requested percentile

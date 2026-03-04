@@ -62,6 +62,14 @@
 | `main_dir` | `Path` | User home | Project root directory containing input data and output products. |
 | `scripts_dir` | `Path \| None` | `main_dir / "scripts"` | Directory containing calibration data and sample GRIB files. |
 
+### Point mode
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `point_lat` | `float \| None` | `None` | Latitude for point mode (-90 to 90). When set with `point_lon`, enables point-mode processing. |
+| `point_lon` | `float \| None` | `None` | Longitude for point mode (-180 to 360). Must be set together with `point_lat`. |
+| `data_source` | `Literal["local", "polytope"]` | `"local"` | Data source: `"local"` reads GRIB files from disk, `"polytope"` requests point data from ECMWF's Polytope service. |
+
 ### Formatting
 
 | Parameter | Type | Default | Description |
@@ -82,6 +90,7 @@ These are computed from the configuration and available as read-only properties:
 | `variable_info` | `dict` | Metadata from the variable registry (param IDs, levels, thresholds) |
 | `min_predictand_value` | `float` | Minimum threshold below which precipitation is treated as zero |
 | `numpy_dtype` | `np.dtype` | NumPy dtype object corresponding to `float_precision` |
+| `is_point_mode` | `bool` | `True` when both `point_lat` and `point_lon` are set |
 
 ## Validation rules
 
@@ -96,3 +105,5 @@ The following cross-field constraints are enforced:
 - `step_start >= 0`
 - `accumulation_hours` must be in the variable's `valid_accumulations` list
 - `percentiles` must be non-empty, all values 1–99, no duplicates
+- `point_lat` and `point_lon` must both be set or both be `None`
+- `data_source="polytope"` requires point mode (both `point_lat` and `point_lon` set)
