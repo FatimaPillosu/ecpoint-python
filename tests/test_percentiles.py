@@ -1,4 +1,9 @@
-"""Tests for percentile computation."""
+"""Tests for percentile computation.
+
+Tests the statistical percentile logic using pure numpy arrays (no GRIB I/O).
+Covers uniform distributions, multi-ensemble CDF matrices, single-field edge
+cases, and all-zero fields to validate the np.percentile-based approach.
+"""
 
 import numpy as np
 import pytest

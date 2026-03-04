@@ -1,4 +1,8 @@
-"""Tests for GRIB utility functions."""
+"""Tests for GRIB utility functions and helper routines.
+
+Tests GRIB read error handling (missing files) and the pure-Python helper
+functions for date/time/step range generation that drive the main loop.
+"""
 
 from pathlib import Path
 

@@ -1,4 +1,9 @@
-"""Tests for EcPointConfig."""
+"""Tests for EcPointConfig.
+
+Validates default values, derived properties (computed from config fields),
+cross-field validation (e.g., date ranges, valid accumulations), and
+config loading from JSON files with optional CLI overrides.
+"""
 
 import datetime
 

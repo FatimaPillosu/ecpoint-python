@@ -1,4 +1,9 @@
-"""Tests for environment validation."""
+"""Tests for environment validation.
+
+Validates that validate_environment correctly reports missing directories
+and calibration files, aggregates all errors into a single exception, and
+passes when all required files exist.
+"""
 
 import pytest
 

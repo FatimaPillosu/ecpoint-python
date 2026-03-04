@@ -32,71 +32,98 @@ logger = logging.getLogger("ecpoint")
 # Configuration
 # =============================================================================
 
-# Lookup table: variable name -> (predictand param code, level type, level,
-#                                  minimum reliable value)
+# Registry of supported post-processing variables.
+# Each entry maps a variable name to its ECMWF GRIB parameter codes and
+# processing constraints:
+#   - predictand_code: GRIB paramId for the raw forecast field
+#   - pp_code: GRIB paramId for the post-processed output field
+#   - min_predictand_value: values below this threshold (in mm for rainfall)
+#     are treated as zero to filter out GRIB packing-precision artifacts
+#   - valid_accumulations: allowed accumulation periods (hours)
 VARIABLE_REGISTRY: dict[str, dict] = {
     "rainfall": {
-        "predictand_code": 228.128,
+        "predictand_code": 228.128,       # Total precipitation (paramId 228)
         "level_type": "sfc",
         "level": 0,
-        "min_predictand_value": 0.04,
-        "pp_code": 82.128,
+        "min_predictand_value": 0.04,     # 0.04 mm noise floor
+        "pp_code": 82.128,               # Large-scale precipitation (output)
         "pp_level_type": "sfc",
         "pp_level": 0,
-        "valid_accumulations": [12],
+        "valid_accumulations": [12],      # Only 12h accumulation supported
     },
 }
 
-# Predictor definitions for rainfall (param_id, level_type, level)
+# Predictor fields used for weather type classification of rainfall.
+# These predictors partition the atmospheric state into weather types (WTs),
+# each representing a distinct precipitation regime (e.g., convective vs
+# stratiform, strong vs weak synoptic forcing). The order must match the
+# column order in the breakpoints calibration file.
+# Field 0 (tp) is the predictand; fields 1-5 are the classification predictors.
 RAINFALL_PREDICTORS = [
-    {"name": "tp", "param_id": 228.128, "level_type": "sfc", "level": 0},
-    {"name": "cpr", "param_id": 143.128, "level_type": "sfc", "level": 0},
-    {"name": "tp_repeat", "param_id": 228.128, "level_type": "sfc", "level": 0},
-    {"name": "wspd700", "param_id": 10.128, "level_type": "pl", "level": 700},
-    {"name": "cape", "param_id": 59.128, "level_type": "sfc", "level": 0},
-    {"name": "sr24h", "param_id": 228022, "level_type": "sfc", "level": 0},
+    {"name": "tp", "param_id": 228.128, "level_type": "sfc", "level": 0},         # Total precipitation (predictand)
+    {"name": "cpr", "param_id": 143.128, "level_type": "sfc", "level": 0},        # Convective precipitation ratio (cp/tp)
+    {"name": "tp_repeat", "param_id": 228.128, "level_type": "sfc", "level": 0},  # TP repeated as a predictor
+    {"name": "wspd700", "param_id": 10.128, "level_type": "pl", "level": 700},    # Wind speed at 700 hPa (synoptic forcing)
+    {"name": "cape", "param_id": 59.128, "level_type": "sfc", "level": 0},        # Convective Available Potential Energy
+    {"name": "sr24h", "param_id": 228022, "level_type": "sfc", "level": 0},       # 24h solar radiation (diurnal cycle proxy)
 ]
 
 
 class EcPointConfig(BaseModel):
-    """All input parameters for an ecPoint run."""
+    """All input parameters for an ecPoint run.
 
-    # Variable to post-process
+    Controls which variable is post-processed, the forecast date/time/step
+    ranges to iterate over, ensemble member range, output percentiles, and
+    file system layout. Pydantic validates all parameters at construction time.
+    """
+
+    # Which meteorological variable to post-process (currently only rainfall)
     var_to_postprocess: Literal["rainfall"] = "rainfall"
+    # Accumulation period in hours (must match VARIABLE_REGISTRY valid values)
     accumulation_hours: int = Field(default=12, ge=0)
+    # Calibration table version (selects the breakpoints/FERs directory)
     calibration_version: str = "1.0.0"
+    # Run mode label used in output directory paths (e.g., "dev", "prod")
     run_mode: str = "dev"
 
-    # Forecast date/time/step ranges
+    # Forecast base date range: the model initialization dates to process.
+    # The pipeline iterates over all dates from base_date_start to base_date_end.
     base_date_start: datetime.date = datetime.date(2020, 2, 19)
     base_date_end: datetime.date = datetime.date(2020, 2, 19)
+    # Forecast base time range (UTC hours): the model initialization times.
+    # Iterates from base_time_start to base_time_end in base_time_disc steps.
     base_time_start: int = Field(default=0, ge=0, le=23)
     base_time_end: int = Field(default=0, ge=0, le=23)
     base_time_disc: int = Field(default=12, gt=0)
+    # Forecast step range (hours from initialization): the lead times to process.
+    # step_start is the beginning of the first accumulation window; step_final
+    # is the beginning of the last. Each window spans [step, step+accumulation].
     step_start: int = Field(default=0, ge=0)
     step_final: int = Field(default=114, ge=0)
     step_disc: int = Field(default=6, gt=0)
 
-    # Ensemble members
+    # Ensemble member range (inclusive). Member 0 is the control forecast;
+    # members 1-50 are the perturbed forecasts in the ECMWF EPS.
     ensemble_member_start: int = Field(default=0, ge=0)
     ensemble_member_end: int = Field(default=50, ge=0)
 
-    # Percentiles (1-99)
+    # Which percentiles (1-99) to compute from the bias-corrected CDF.
+    # Default is all 99 percentiles for a full probabilistic description.
     percentiles: list[int] = Field(
         default_factory=lambda: list(range(1, 100))
     )
 
-    # Directory paths
+    # Root directory for inputs/outputs and optional override for scripts location
     main_dir: Path = Path.home()
     scripts_dir: Path | None = None  # defaults to main_dir / "scripts"
 
-    # Formatting digits
+    # Zero-padding widths for file/directory naming consistency
     num_digits_base_time: int = 2
     num_digits_step: int = 3
     num_digits_acc: int = 3
     num_digits_ensemble_member: int = 2
 
-    # Precision
+    # Floating-point precision for numerical computations
     float_precision: Literal["float32", "float64"] = "float32"
 
     # --- Validators ---
@@ -225,43 +252,61 @@ def validate_environment(cfg: EcPointConfig, paths: "EcPointPaths") -> None:
 
 @dataclass
 class EcPointPaths:
-    """All resolved directory and file paths for an ecPoint run."""
+    """All resolved directory and file paths for an ecPoint run.
+
+    Paths are organized into:
+      - Root directories: top-level project structure
+      - Working sub-directories: intermediate files during processing
+      - Output sub-directories: final products delivered to the user
+      - Calibration files: breakpoint thresholds and FERs tables
+      - Sample GRIB files: spatial templates for output GRIB generation
+    """
 
     # Root directories
-    main_dir: Path
-    scripts_dir: Path
-    database_dir: Path
-    temp_dir: Path
-    work_dir: Path
-    out_dir: Path
+    main_dir: Path          # Top-level project directory
+    scripts_dir: Path       # Scripts and calibration data
+    database_dir: Path      # Raw ECMWF forecast input data (GRIB files)
+    temp_dir: Path          # Run-specific temporary root
+    work_dir: Path          # Working directory for intermediate files
+    out_dir: Path           # Final output directory
 
-    # Working sub-directories
-    wdir_predict: Path
-    wdir_pt_rain_cdf: Path
-    wdir_grid_rain: Path
-    wdir_wt: Path
-    wdir_percentiles: Path
+    # Working sub-directories (temporary, cleaned up after processing)
+    wdir_predict: Path      # Pre-computed predictand + predictors per EM
+    wdir_pt_rain_cdf: Path  # Bias-corrected CDF per ensemble member (global)
+    wdir_grid_rain: Path    # Grid-scale bias-corrected rainfall per EM
+    wdir_wt: Path           # Weather type codes per EM
+    wdir_percentiles: Path  # Computed percentile fields
 
-    # Output sub-directories
-    out_pt_perc: Path
-    out_grid_vals: Path
-    out_wt: Path
+    # Output sub-directories (permanent)
+    out_pt_perc: Path       # Point bias-corrected percentiles
+    out_grid_vals: Path     # Grid-scale bias-corrected values (all EMs concatenated)
+    out_wt: Path            # Weather type codes (all EMs concatenated)
 
-    # Calibration files
-    map_func_dir: Path
-    breakpoints_file: Path
-    fers_file: Path
+    # Calibration files (read-only inputs)
+    map_func_dir: Path       # Directory containing mapping function tables
+    breakpoints_file: Path   # WT classification breakpoint thresholds CSV
+    fers_file: Path          # Forecast Error Ratios CSV
 
-    # Sample GRIB files
+    # Sample GRIB files (spatial templates for output generation)
     sample_dir: Path
-    global_sample_file: Path
+    global_sample_file: Path  # Global grid template for percentile GRIB output
 
 
 def build_paths(cfg: EcPointConfig) -> EcPointPaths:
-    """Build all paths from the configuration."""
+    """Build all paths from the configuration.
+
+    The directory layout follows the convention:
+      main_dir/
+        input_db/          — raw ECMWF GRIB inputs
+        scripts/comp_files/ — calibration tables and sample GRIB files
+        {run_mode}/ecpoint_{var}/{acc}/{version}/
+          work/            — temporary intermediate files
+          forecasts/       — final output products
+    """
     scripts_dir = cfg.scripts_dir or (cfg.main_dir / "scripts")
     database_dir = cfg.main_dir / "input_db"
 
+    # Path component encoding variable, accumulation period, and version
     var_acc_ver = (
         f"ecpoint_{cfg.var_to_postprocess}"
         f"/{cfg.accumulation_str}"
@@ -302,7 +347,12 @@ def build_paths(cfg: EcPointConfig) -> EcPointPaths:
 def create_filesystem(
     cfg: EcPointConfig, paths: EcPointPaths
 ) -> None:
-    """Create the full directory tree for working and output files."""
+    """Create the full directory tree for working and output files.
+
+    Pre-creates all directories organized by date/time/step so that the
+    processing loop can write files without checking directory existence.
+    Predictor directories additionally include per-ensemble-member subdirs.
+    """
     for base_date in _date_range(cfg.base_date_start, cfg.base_date_end):
         bd_str = base_date.strftime("%Y%m%d")
 
@@ -410,28 +460,40 @@ def concat_grib_files(input_paths: list[Path], output_path: Path) -> None:
 
 @dataclass
 class CalibrationData:
-    """Breakpoints and Forecast Error Ratios for weather type classification.
+    """Breakpoints and Forecast Error Ratios (FERs) for weather type classification.
 
-    Loaded from BreakPointsWT.txt and FERs.txt.
+    The calibration data comes from two CSV files:
+    - breakpoints_wt.txt: defines the predictor threshold ranges that partition
+      the atmospheric state into weather types (WTs). Each WT is a row with
+      [low, high) bounds for each predictor.
+    - fers.txt: for each WT, provides a set of multiplicative correction factors
+      (FERs) that transform the raw forecast into a bias-corrected CDF.
+      Typically 100 FER columns represent the empirical error distribution.
     """
 
-    weather_type_codes: np.ndarray   # shape (num_wt,)
-    breakpoints_low: np.ndarray      # shape (num_wt, num_predictors)
-    breakpoints_high: np.ndarray     # shape (num_wt, num_predictors)
-    fers: np.ndarray                 # shape (num_wt, num_fers)
+    weather_type_codes: np.ndarray   # shape (num_wt,) — integer WT identifiers
+    breakpoints_low: np.ndarray      # shape (num_wt, num_predictors) — inclusive lower bounds
+    breakpoints_high: np.ndarray     # shape (num_wt, num_predictors) — exclusive upper bounds
+    fers: np.ndarray                 # shape (num_wt, num_fers) — error ratio values
     num_predictors: int
     num_weather_types: int
     num_fers: int
 
 
 def load_calibration(paths: EcPointPaths) -> CalibrationData:
-    """Load calibration tables from CSV files."""
+    """Load calibration tables from CSV files.
+
+    The breakpoints file has columns: WTcode, pred1_thrL, pred1_thrH, pred2_thrL, ...
+    The FERs file has columns: Wtcode, FER1, FER2, ..., FER100
+    Both files must have the same number of weather type rows.
+    """
     # --- Breakpoints ---
     bp_df = pd.read_csv(paths.breakpoints_file)
     wt_codes = bp_df.iloc[:, 0].values.astype(np.int64)
     num_wt = len(wt_codes)
 
-    # Columns after WTcode are pairs: (pred_thrL, pred_thrH) for each predictor
+    # Columns after WTcode come in pairs: (pred_thrL, pred_thrH) for each predictor.
+    # Extract them into separate low/high arrays for efficient vectorized comparison.
     threshold_cols = bp_df.columns[1:]
     num_predictors = len(threshold_cols) // 2
 
@@ -443,7 +505,8 @@ def load_calibration(paths: EcPointPaths) -> CalibrationData:
 
     # --- FERs ---
     fer_df = pd.read_csv(paths.fers_file)
-    # First column is Wtcode, rest are FER1..FER100
+    # First column is Wtcode (matching breakpoints), rest are FER columns.
+    # Each FER column represents one quantile of the empirical error distribution.
     num_fers = len(fer_df.columns) - 1
     fers = fer_df.iloc[:, 1:].values.astype(np.float64)
 
@@ -483,16 +546,21 @@ def _trapezoidal_time_average(
 def _compute_steps(
     step_start: int, accumulation: int, step_final_max: int
 ) -> dict:
-    """Compute the various step indices needed for predictor calculation.
+    """Compute the various forecast step indices needed for predictor calculation.
 
-    Returns a dict with step1, step2, step3 (for the accumulation period)
-    and step1_sr, step2_sr (for 24h solar radiation).
+    For the accumulation window [step_start, step_start + accumulation]:
+      - step1, step2, step3 are the start, midpoint, and end of the window,
+        used for time-averaging wind speed and CAPE via the trapezoidal rule.
+    For 24h solar radiation:
+      - step1_sr, step2_sr define a 24h window ending at or before step_f.
+        If step_f <= 24, the window is [0, 24]; otherwise [step_f-24, step_f].
     """
     step_f = step_start + accumulation
     step1 = step_start
     step2 = step1 + accumulation // 2
     step3 = step_f
 
+    # Solar radiation always uses a 24h accumulation window
     if step_f <= 24:
         step1_sr = 0
         step2_sr = 24
@@ -538,7 +606,17 @@ def compute_predictors(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Compute predictand + predictors and save per-ensemble-member GRIB files."""
+    """Compute predictand + predictors and save per-ensemble-member GRIB files.
+
+    For each ensemble member, derives 6 fields from the raw ECMWF forecast:
+      0. Total Precipitation (TP): accumulated TP difference converted m -> mm
+      1. Convective Precipitation Ratio (CPR): fraction of TP that is convective
+      2. TP (repeated): same as field 0, used as a predictor for WT classification
+      3. Wind Speed at 700 hPa: time-averaged from u/v components (synoptic forcing)
+      4. CAPE: time-averaged Convective Available Potential Energy (instability)
+      5. 24h Solar Radiation: accumulated over 24h, converted J/m^2 -> W/m^2
+    These are saved as a single multi-field GRIB per ensemble member.
+    """
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -598,17 +676,24 @@ def compute_predictors(
     for em_idx in range(cfg.ensemble_member_start, cfg.ensemble_member_end + 1):
         em_str = str(em_idx).zfill(cfg.num_digits_ensemble_member)
 
-        # --- Predictand: Total Precipitation (m -> mm) ---
+        # --- Predictand: Total Precipitation ---
+        # Accumulated TP difference over the accumulation window, converted m -> mm
         tp_vals = (tp_3[em_idx].values - tp_1[em_idx].values) * 1000.0
 
-        # --- Predictor 1: Convective Precipitation Ratio ---
+        # --- Predictor 1: Convective Precipitation Ratio (CPR) ---
+        # Ratio of convective to total precipitation; indicates the convective
+        # contribution. Set to 0 where TP is zero to avoid division by zero.
         cp_vals = (cp_3[em_idx].values - cp_1[em_idx].values) * 1000.0
         cpr_vals = np.where(tp_vals > 0, cp_vals / tp_vals, 0.0)
 
         # --- Predictor 2: Total Precipitation (same as predictand) ---
+        # TP is used both as the predictand and as a predictor for WT classification
         tp_pred_vals = tp_vals.copy()
 
         # --- Predictor 3: Wind Speed at 700 hPa ---
+        # Time-averaged u and v wind components at 700 hPa over the accumulation
+        # period using trapezoidal rule, then combined into wind speed magnitude.
+        # Indicates the strength of synoptic-scale forcing.
         u_avg = _trapezoidal_time_average(
             u700_1[em_idx].values,
             u700_2[em_idx].values,
@@ -622,13 +707,17 @@ def compute_predictors(
         wspd700_vals = np.sqrt(u_avg**2 + v_avg**2)
 
         # --- Predictor 4: CAPE ---
+        # Time-averaged Convective Available Potential Energy; measures
+        # atmospheric instability and potential for convective precipitation.
         cape_vals = _trapezoidal_time_average(
             cape_1[em_idx].values,
             cape_2[em_idx].values,
             cape_3[em_idx].values,
         )
 
-        # --- Predictor 5: Daily Solar Radiation ---
+        # --- Predictor 5: 24h Solar Radiation ---
+        # Accumulated solar radiation over 24h, converted J/m^2 -> W/m^2.
+        # Acts as a proxy for the diurnal cycle and surface heating.
         sr24h_vals = (sr_2[em_idx].values - sr_1[em_idx].values) / 86400.0
 
         # Build output: 6 fields per ensemble member
@@ -678,8 +767,14 @@ def classify_weather_types(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Classify each grid point into a weather type based on predictor values.
 
-    For each weather type, checks whether all predictor values fall within
-    the corresponding breakpoint thresholds [low, high).
+    The weather type (WT) classification uses a decision-tree-like approach:
+    each WT defines a hyper-rectangular region in predictor space via
+    [low, high) breakpoint thresholds. A grid point is assigned the first WT
+    whose thresholds are satisfied by all predictors simultaneously.
+
+    The implementation is fully vectorized using numpy broadcasting to avoid
+    per-grid-point Python loops, which is critical for performance on global
+    grids (~2M points).
 
     Returns:
         wt_codes: 1-D array of WT code per grid point (int).
@@ -690,25 +785,27 @@ def classify_weather_types(
     n_wt = calibration.num_weather_types
     n_pred = calibration.num_predictors
 
-    # Stack predictors: shape (n_pred, n_grid)
+    # Stack predictors into a 2-D array: shape (n_pred, n_grid)
     pred_stack = np.stack(predictors[:n_pred], axis=0)
 
-    # Broadcast comparison: shape (n_wt, n_pred, n_grid)
-    # bp_low/high: (n_wt, n_pred) -> (n_wt, n_pred, 1)
+    # Use broadcasting to compare all grid points against all WTs at once.
+    # Expand dimensions so that numpy broadcasts across (n_wt, n_pred, n_grid):
+    #   breakpoints: (n_wt, n_pred) -> (n_wt, n_pred, 1)
+    #   predictors:  (n_pred, n_grid) -> (1, n_pred, n_grid)
     low = calibration.breakpoints_low[:, :, np.newaxis]   # (n_wt, n_pred, 1)
     high = calibration.breakpoints_high[:, :, np.newaxis]  # (n_wt, n_pred, 1)
     pred_exp = pred_stack[np.newaxis, :, :]                # (1, n_pred, n_grid)
 
-    # Check: low <= predictor < high for all predictors
+    # A grid point matches a WT when ALL predictors are within [low, high)
     in_range = (pred_exp >= low) & (pred_exp < high)  # (n_wt, n_pred, n_grid)
-    all_match = np.all(in_range, axis=1)  # (n_wt, n_grid)
+    all_match = np.all(in_range, axis=1)  # (n_wt, n_grid) — True where all predictors match
 
-    # For each grid point, find the first matching WT
-    # Use argmax on the match matrix (first True along WT axis)
-    # If no WT matches, all_match will be all-False for that column
-    any_match = np.any(all_match, axis=0)  # (n_grid,)
+    # For each grid point, select the first matching WT (lowest index).
+    # np.argmax returns the index of the first True along the WT axis.
+    any_match = np.any(all_match, axis=0)  # (n_grid,) — True if any WT matched
     wt_idx = np.argmax(all_match, axis=0)  # (n_grid,) — index of first match
 
+    # Unmatched grid points get index -1 and code 0
     wt_indices = np.where(any_match, wt_idx, -1)
     wt_codes = np.where(
         any_match,
@@ -726,21 +823,30 @@ def apply_fers(
 ) -> list[np.ndarray]:
     """Apply Forecast Error Ratios to create the bias-corrected CDF.
 
-    For each grid point, the predictand is multiplied by (FER[wt, i] + 1)
-    for each FER column, producing n_fers new values.
+    The FER approach corrects systematic model biases by applying empirically
+    derived multiplicative factors. For each grid point:
+      corrected_value[i] = raw_forecast * (FER[wt, i] + 1)
 
-    Returns a list of n_fers arrays, each of shape (n_grid,).
+    The FER values represent fractional errors: FER = (obs - fcst) / fcst,
+    so (FER + 1) = obs/fcst is the correction factor. Each FER column
+    corresponds to one quantile of the error distribution, producing an
+    ensemble of corrected values that forms a local CDF (Cumulative
+    Distribution Function) at that grid point.
+
+    Returns a list of n_fers arrays, each of shape (n_grid,), representing
+    the n_fers quantiles of the corrected CDF.
     """
     n_grid = len(predictand)
     n_fers = calibration.num_fers
 
-    # Build the FER matrix for each grid point: shape (n_grid, n_fers)
-    # For grid points with no WT match (wt_indices == -1), FER = 0 -> factor = 1
+    # Look up the FER row for each grid point based on its weather type.
+    # Grid points with no WT match (wt_indices == -1) get FER = 0,
+    # meaning factor = 1, so the raw forecast is returned unchanged.
     valid_mask = wt_indices >= 0
     fer_per_point = np.zeros((n_grid, n_fers), dtype=np.float64)
     fer_per_point[valid_mask] = calibration.fers[wt_indices[valid_mask]]
 
-    # CDF values: predictand * (FER + 1)
+    # Apply correction: raw_forecast * (FER + 1) for each FER quantile
     factors = fer_per_point + 1.0  # (n_grid, n_fers)
     cdf_values = predictand[:, np.newaxis] * factors  # (n_grid, n_fers)
 
@@ -755,7 +861,16 @@ def postprocess_ensemble(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Post-process all ensemble members: classify WTs, apply FERs, save outputs."""
+    """Post-process all ensemble members: classify WTs, apply FERs, save outputs.
+
+    For each ensemble member, the pipeline:
+      a. Reads the pre-computed predictand and predictors from GRIB
+      b. Classifies each grid point into a weather type (WT) using breakpoints
+      c. Applies FERs to generate a bias-corrected CDF at each grid point
+      d. Saves the grid-scale bias-corrected rainfall (mean of CDF values)
+      e. Saves the weather type codes for diagnostic purposes
+      f. Saves the full CDF for later percentile computation across all members
+    """
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -804,7 +919,9 @@ def postprocess_ensemble(
         )
         write_grib(grid_bc_fl, grid_bc_path)
 
-        # e. Save WT codes (with "no-WT" code for sub-threshold values)
+        # e. Save WT codes (with a special "no-WT" sentinel for sub-threshold values).
+        # Grid points with TP below the minimum threshold are assigned a code of
+        # all 9s (e.g., 99999 for 5 predictors) to indicate "no classification".
         no_wt_code = int("9" * calibration.num_predictors)
         wt_output = np.where(
             predictand < cfg.min_predictand_value,
@@ -841,7 +958,14 @@ def compute_percentiles(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Compute percentiles from global CDFs across all ensemble members."""
+    """Compute percentiles from global CDFs across all ensemble members.
+
+    Collects all CDF fields (num_ensemble_members * num_fers fields total)
+    into a single matrix and computes the requested percentiles along the
+    ensemble/FER axis at each grid point. This produces the final
+    probabilistic point-rainfall forecast: each percentile field represents
+    a quantile of the bias-corrected rainfall distribution.
+    """
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -863,16 +987,21 @@ def compute_percentiles(
         cdf_data = read_grib(cdf_path)
         all_cdf_values.extend(get_all_values(cdf_data))
 
-    # Stack: shape (n_total_cdf_fields, n_grid_global)
+    # Stack all CDF fields into a matrix: shape (n_total_cdf_fields, n_grid_global)
+    # where n_total_cdf_fields = num_ensemble_members * num_fers
     cdf_matrix = np.stack(all_cdf_values, axis=0)
 
-    # Compute percentiles along the field axis (axis=0)
+    # Compute percentiles along the field axis (axis=0).
+    # For each grid point, this produces the requested quantiles of the
+    # combined ensemble+FER distribution.
     # Result shape: (num_percentiles, n_grid_global)
     global_percentiles = np.percentile(
         cdf_matrix, cfg.percentiles, axis=0
     )
 
-    # Create output GRIB using global sample as template
+    # Create output GRIB using a global sample file as the spatial template.
+    # Each percentile is stored as a separate GRIB message, encoded as
+    # perturbed forecast members (perturbationNumber = percentile index).
     gl_sample = read_grib(paths.global_sample_file)
     gl_template = gl_sample[0]
     num_perc = len(cfg.percentiles)
@@ -918,7 +1047,13 @@ def move_outputs(
     base_time: int,
     step_start: int,
 ) -> None:
-    """Move output files from working directories to the final output database."""
+    """Move output files from working directories to the final output database.
+
+    Three types of output are produced per date/time/step:
+      1. Percentile GRIB: the probabilistic point-rainfall forecast (1 file)
+      2. Grid-bias-corrected rainfall: all ensemble members concatenated (1 file)
+      3. Weather types: all ensemble members concatenated (1 file)
+    """
     bd_str = base_date.strftime("%Y%m%d")
     bt_str = str(base_time).zfill(cfg.num_digits_base_time)
     date_time_str = f"{bd_str}{bt_str}"
@@ -990,7 +1125,19 @@ def _step_range(start: int, final: int, disc: int) -> list[int]:
 
 
 def run_ecpoint(cfg: EcPointConfig) -> None:
-    """Run the full ecPoint post-processing pipeline."""
+    """Run the full ecPoint post-processing pipeline.
+
+    The pipeline has two phases:
+      Phase 1 — Environment setup: build paths, validate that all required
+        calibration and sample files exist, create the output directory tree,
+        and load the calibration tables (breakpoints + FERs).
+      Phase 2 — Post-processing: iterate over all (date, time, step)
+        combinations. For each combination, compute predictors from raw ECMWF
+        fields, classify weather types, apply FERs to generate CDFs, compute
+        percentiles across all ensemble members, and move outputs to the
+        final database.
+    After processing, temporary working directories are cleaned up.
+    """
     logger.info("=" * 60)
     logger.info("ecPoint — Forecasts for Point Values")
     logger.info("  Variable: %s", cfg.var_to_postprocess)
@@ -1141,7 +1288,9 @@ def main(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Build config from file or CLI options
+    # Build config from file or CLI options.
+    # CLI options override values from the config file. Only non-default
+    # values are passed as overrides to avoid masking file-provided values.
     overrides = {}
     if var_to_postprocess != "rainfall":
         overrides["var_to_postprocess"] = var_to_postprocess

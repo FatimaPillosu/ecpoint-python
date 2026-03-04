@@ -1,4 +1,10 @@
-"""Tests for calibration data loading."""
+"""Tests for calibration data loading.
+
+Tests loading breakpoints and FERs from CSV files, including threshold
+parsing, FER matrix shape validation, and row-count mismatch detection.
+Also includes optional tests against real calibration files (skipped if
+the full ecPoint calibration data is not available).
+"""
 
 import textwrap
 

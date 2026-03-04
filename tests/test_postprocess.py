@@ -1,4 +1,9 @@
-"""Tests for post-processing."""
+"""Tests for post-processing (weather type classification and FER application).
+
+Tests use the sample_calibration fixture (3 WTs, 2 predictors, 5 FERs) to
+verify correct WT assignment including boundary conditions and vectorized
+multi-grid-point classification, plus FER-based bias correction arithmetic.
+"""
 
 import numpy as np
 import pytest

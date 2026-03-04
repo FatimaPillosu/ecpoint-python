@@ -1,4 +1,9 @@
-"""Tests for predictor computation."""
+"""Tests for predictor computation.
+
+Tests the pure-numpy components of predictor calculation without requiring
+GRIB files: trapezoidal time averaging, forecast step index computation,
+input file path construction, and the core precipitation/wind/radiation formulas.
+"""
 
 import numpy as np
 import pytest

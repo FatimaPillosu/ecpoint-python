@@ -1,4 +1,11 @@
-"""Shared fixtures for ecPoint tests."""
+"""Shared fixtures for ecPoint tests.
+
+Provides reusable test fixtures including:
+  - default_config / small_config: EcPointConfig instances for unit tests
+  - small_paths: derived EcPointPaths for filesystem-related tests
+  - sample_breakpoints_csv / sample_fers_csv: minimal calibration CSV files
+  - sample_calibration: pre-built CalibrationData with 3 weather types
+"""
 
 import datetime
 import textwrap
@@ -76,7 +83,14 @@ def sample_fers_csv(tmp_path):
 
 @pytest.fixture
 def sample_calibration():
-    """A small CalibrationData for unit testing."""
+    """A small CalibrationData with 3 weather types and 2 predictors.
+
+    WT 101: pred1 in [-9999, 0.5),  pred2 in [-9999, 10)  — "light/stratiform"
+    WT 102: pred1 in [0.5, 1.0),    pred2 in [-9999, 10)  — "moderate"
+    WT 103: pred1 in [0.5, 1.0),    pred2 in [10, 9999)   — "convective"
+
+    FERs have 5 columns representing a small empirical error distribution.
+    """
     return CalibrationData(
         weather_type_codes=np.array([101, 102, 103]),
         breakpoints_low=np.array([

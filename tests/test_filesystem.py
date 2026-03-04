@@ -1,4 +1,9 @@
-"""Tests for filesystem creation."""
+"""Tests for path building and filesystem creation.
+
+Validates that build_paths produces correct directory structures encoding
+the variable, accumulation, and version, and that create_filesystem
+creates all required directories (including per-ensemble-member subdirs).
+"""
 
 import datetime
 
