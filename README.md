@@ -174,6 +174,17 @@ pytest
 
 The test suite covers configuration validation, calibration loading, predictor formulas, weather type classification, FER application, percentile computation, and filesystem operations — all without requiring real GRIB data.
 
+## Documentation
+
+Full documentation is available in the [`docs/`](docs/) directory:
+
+- [Installation](docs/installation.md) — requirements, setup, and input data
+- [Usage](docs/usage.md) — CLI options, Python API, and JSON config format
+- [Configuration Reference](docs/configuration.md) — all `EcPointConfig` parameters and validation rules
+- [Pipeline Architecture](docs/pipeline.md) — detailed processing steps and directory layout
+- [Calibration Data](docs/calibration.md) — file formats and how to create custom calibration tables
+- [Contributing](docs/contributing.md) — development setup, testing, and adding new variables
+
 ## License
 
 Apache License 2.0. Copyright 2020 ECMWF.
